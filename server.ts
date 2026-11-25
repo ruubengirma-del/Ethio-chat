@@ -6,7 +6,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import nodemailer from 'nodemailer';
-import { getApps, initializeApp, getApp } from 'firebase-admin/app';
+import { getApps, initializeApp, getApp, cert } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { getMessaging as getAdminMessaging } from 'firebase-admin/messaging';
@@ -43,13 +43,36 @@ try {
   // use defaults
 }
 
-// Initialize Firebase Admin (uses ADC if available in Cloud Run / GCP environment)
+// Initialize Firebase Admin (ID token verification works publicly; Firestore/Auth Admin mutations require ADC or service account)
 let adminReady = false;
+let adminCredentialsAvailable = false;
 try {
+  const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON?.trim();
+  const gacPath = process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  const hasGacFile = Boolean(gacPath && fs.existsSync(gacPath));
+  const isGcpRuntime = Boolean(
+    process.env.K_SERVICE ||
+      process.env.CLOUD_RUN_JOB ||
+      process.env.FUNCTION_TARGET ||
+      process.env.GAE_APPLICATION ||
+      process.env.GCE_METADATA_HOST
+  );
+
   if (!getApps().length) {
-    initializeApp({
-      projectId: firebaseProjectId,
-    });
+    if (serviceAccountRaw) {
+      initializeApp({
+        projectId: firebaseProjectId,
+        credential: cert(JSON.parse(serviceAccountRaw)),
+      });
+      adminCredentialsAvailable = true;
+    } else {
+      initializeApp({
+        projectId: firebaseProjectId,
+      });
+      adminCredentialsAvailable = hasGacFile || isGcpRuntime;
+    }
+  } else {
+    adminCredentialsAvailable = Boolean(serviceAccountRaw) || hasGacFile || isGcpRuntime;
   }
   adminReady = true;
 } catch (err) {
@@ -250,8 +273,8 @@ async function sendOutboundEmail(params: {
 }
 
 async function findUserByEmail(normalizedEmail: string): Promise<{ uid: string; email: string } | null> {
-  // 1. Try Firebase Admin Auth lookup
-  if (adminReady) {
+  // 1. Try Firebase Admin Auth lookup (only when server ADC/service-account credentials exist)
+  if (adminReady && adminCredentialsAvailable) {
     try {
       const userRecord = await getAdminAuth(getApp()).getUserByEmail(normalizedEmail);
       return { uid: userRecord.uid, email: userRecord.email || normalizedEmail };
@@ -988,8 +1011,12 @@ app.post('/api/auth/complete-password-reset', async (req, res) => {
     return;
   }
 
-  if (!adminReady) {
-    res.status(503).json({ ok: false, error: 'Password update service requires Firebase Admin credentials on the server.' });
+  if (!adminReady || !adminCredentialsAvailable) {
+    res.status(503).json({
+      ok: false,
+      code: 'FIREBASE_ADMIN_IAM_REQUIRED',
+      error: 'Direct server password update requires Firebase Admin credentials. Please use the Send Reset Email (Firebase) button below to complete your password reset.',
+    });
     return;
   }
 
@@ -1045,7 +1072,7 @@ app.post('/api/auth/complete-password-reset', async (req, res) => {
 // 3b. Seamless saved-account switching custom token (when Firebase Admin credentials are available)
 app.post('/api/auth/custom-token', async (req, res) => {
   const uid = String(req.body?.uid || '').trim();
-  if (!uid || !adminReady) {
+  if (!uid || !adminReady || !adminCredentialsAvailable) {
     res.status(200).json({ ok: false });
     return;
   }
@@ -1282,7 +1309,7 @@ app.post('/api/auth/complete-email-change', async (req, res) => {
   }
 
   let authUpdatedOnServer = false;
-  if (adminReady) {
+  if (adminReady && adminCredentialsAvailable) {
     try {
       await getAdminAuth(getApp()).updateUser(caller.uid, { email: newEmail });
       authUpdatedOnServer = true;
@@ -2370,17 +2397,21 @@ app.post('/api/notifications/send-push', async (req, res) => {
     const tokens: Array<{ tokenId: string; token: string }> = [];
 
     try {
-      const adminDb = getAdminFirestore(getApp(), firestoreDatabaseId);
-      const snap = await adminDb
-        .collection('users')
-        .doc(toUserId)
-        .collection('fcmTokens')
-        .limit(20)
-        .get();
-      snap.forEach((d) => {
-        const t = String(d.data()?.token || '').trim();
-        if (t) tokens.push({ tokenId: d.id, token: t });
-      });
+      if (adminCredentialsAvailable) {
+        const adminDb = getAdminFirestore(getApp(), firestoreDatabaseId);
+        const snap = await adminDb
+          .collection('users')
+          .doc(toUserId)
+          .collection('fcmTokens')
+          .limit(20)
+          .get();
+        snap.forEach((d) => {
+          const t = String(d.data()?.token || '').trim();
+          if (t) tokens.push({ tokenId: d.id, token: t });
+        });
+      } else {
+        throw new Error('NO_ADMIN_CREDENTIALS');
+      }
     } catch {
       const listUrl = `https://firestore.googleapis.com/v1/projects/${firebaseProjectId}/databases/${firestoreDatabaseId}/documents/users/${encodeURIComponent(toUserId)}/fcmTokens?pageSize=20${firebaseApiKey ? `&key=${firebaseApiKey}` : ''}`;
       const r = await fetch(listUrl, {
@@ -2398,6 +2429,11 @@ app.post('/api/notifications/send-push', async (req, res) => {
 
     if (tokens.length === 0) {
       res.json({ ok: true, sentCount: 0, reason: 'NO_FCM_TOKENS' });
+      return;
+    }
+
+    if (!adminCredentialsAvailable) {
+      res.status(200).json({ ok: false, reason: 'FCM_CREDENTIALS_UNAVAILABLE' });
       return;
     }
 
@@ -2472,7 +2508,7 @@ app.post('/api/notifications/send-push', async (req, res) => {
 // Background server-side expiration sweep (runs automatically when Firebase Admin Firestore IAM is enabled)
 let adminFirestoreUnavailable = false;
 async function runBackgroundAdminLifecycleSweep() {
-  if (!adminReady || adminFirestoreUnavailable) return;
+  if (!adminReady || !adminCredentialsAvailable || adminFirestoreUnavailable) return;
   try {
     const adminDb = getAdminFirestore(getApp(), firestoreDatabaseId);
     const snap = await adminDb
@@ -2614,9 +2650,15 @@ async function runBackgroundAdminLifecycleSweep() {
     }
   } catch (err: any) {
     const msg = String(err?.message || err || '');
-    if (msg.includes('PERMISSION_DENIED') || err?.code === 7) {
-      // Quietly disable background Admin SDK sweep on Starter Tier where SA lacks Cloud Datastore IAM
+    if (
+      msg.includes('PERMISSION_DENIED') ||
+      msg.includes('NO_ADC_FOUND') ||
+      msg.includes('Could not load the default credentials') ||
+      err?.code === 7
+    ) {
+      // Quietly disable background Admin SDK sweep when SA/ADC credentials or Datastore IAM are unavailable
       adminFirestoreUnavailable = true;
+      adminCredentialsAvailable = false;
     }
   }
 }
@@ -2650,12 +2692,14 @@ async function startServer() {
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Ethio Chat server running on http://0.0.0.0:${PORT}`);
-    setTimeout(() => {
-      runBackgroundAdminLifecycleSweep().catch(() => {});
-    }, 8000);
-    setInterval(() => {
-      runBackgroundAdminLifecycleSweep().catch(() => {});
-    }, 5 * 60 * 1000);
+    if (adminCredentialsAvailable) {
+      setTimeout(() => {
+        runBackgroundAdminLifecycleSweep().catch(() => {});
+      }, 8000);
+      setInterval(() => {
+        runBackgroundAdminLifecycleSweep().catch(() => {});
+      }, 5 * 60 * 1000);
+    }
   });
 
   // Real-Time WebRTC Signaling WebSocket for Team 10-Seat Live Voice/Video Stage
@@ -2857,5 +2901,35 @@ async function startServer() {
     }
   });
 }
+
+function isMissingAdcError(err: unknown): boolean {
+  const msg = String((err as any)?.message || err || '');
+  return (
+    msg.includes('NO_ADC_FOUND') ||
+    msg.includes('Could not load the default credentials') ||
+    msg.includes('Unable to detect a Project Id')
+  );
+}
+
+process.on('unhandledRejection', (reason) => {
+  if (isMissingAdcError(reason)) {
+    adminFirestoreUnavailable = true;
+    adminCredentialsAvailable = false;
+    console.warn('Firebase Admin ADC unavailable in this host environment; continuing with client/REST mode.');
+    return;
+  }
+  console.error('Unhandled promise rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  if (isMissingAdcError(err)) {
+    adminFirestoreUnavailable = true;
+    adminCredentialsAvailable = false;
+    console.warn('Firebase Admin ADC unavailable in this host environment; continuing with client/REST mode.');
+    return;
+  }
+  console.error('Uncaught exception:', err);
+  process.exit(1);
+});
 
 startServer();
