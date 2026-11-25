@@ -94,7 +94,7 @@ export const VideoFeedView: React.FC<VideoFeedViewProps> = ({
     <div
       ref={containerRef}
       {...pullHandlers}
-      className="max-w-xl mx-auto px-4 py-4 space-y-4 pb-24 overscroll-y-contain"
+      className="max-w-xl mx-auto px-4 py-4 space-y-4 pb-24 min-h-[calc(100dvh-8rem)] overscroll-y-contain"
     >
       <PullToRefreshBanner
         pullDistance={pullDistance}

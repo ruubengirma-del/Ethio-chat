@@ -312,7 +312,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     <div
       ref={containerRef}
       {...pullHandlers}
-      className="max-w-xl mx-auto pb-24 overscroll-y-contain"
+      className="max-w-xl mx-auto pb-24 min-h-[calc(100dvh-8rem)] overscroll-y-contain"
     >
       <PullToRefreshBanner
         pullDistance={pullDistance}

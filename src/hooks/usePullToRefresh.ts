@@ -21,7 +21,13 @@ export function usePullToRefresh({
   const isPointerDraggingRef = useRef<boolean>(false);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshingRef = useRef<boolean>(false);
+  const pullDistanceRef = useRef<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const updatePullDistance = useCallback((value: number) => {
+    pullDistanceRef.current = value;
+    setPullDistance(value);
+  }, []);
 
   const isAtTopOfScroll = useCallback(() => {
     if (typeof window !== 'undefined' && window.scrollY > 4) return false;
@@ -43,7 +49,7 @@ export function usePullToRefresh({
     touchStartYRef.current = null;
     isPointerDraggingRef.current = false;
     setIsRefreshing(true);
-    setPullDistance(PULL_THRESHOLD);
+    updatePullDistance(PULL_THRESHOLD);
 
     const startedAt = Date.now();
     try {
@@ -57,11 +63,11 @@ export function usePullToRefresh({
       }
       refreshingRef.current = false;
       setIsRefreshing(false);
-      setPullDistance(0);
+      updatePullDistance(0);
       setRefreshJustDone(true);
       setTimeout(() => setRefreshJustDone(false), 1800);
     }
-  }, [onRefresh, disabled]);
+  }, [onRefresh, disabled, updatePullDistance]);
 
   useEffect(() => {
     if (externalRefreshSignal > 0) {
@@ -87,7 +93,7 @@ export function usePullToRefresh({
     if (disabled || touchStartYRef.current === null || refreshingRef.current) return;
     if (!isAtTopOfScroll()) {
       touchStartYRef.current = null;
-      setPullDistance(0);
+      updatePullDistance(0);
       if (holdTimerRef.current) {
         clearTimeout(holdTimerRef.current);
         holdTimerRef.current = null;
@@ -97,7 +103,7 @@ export function usePullToRefresh({
 
     const delta = clientY - touchStartYRef.current;
     if (delta <= 0) {
-      setPullDistance(0);
+      updatePullDistance(0);
       if (holdTimerRef.current) {
         clearTimeout(holdTimerRef.current);
         holdTimerRef.current = null;
@@ -106,7 +112,7 @@ export function usePullToRefresh({
     }
 
     const damped = Math.min(92, Math.round(delta * 0.52));
-    setPullDistance(damped);
+    updatePullDistance(damped);
 
     if (damped >= PULL_THRESHOLD) {
       if (!holdTimerRef.current) {
@@ -125,14 +131,14 @@ export function usePullToRefresh({
       clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
     }
-    const shouldRefresh = !disabled && pullDistance >= PULL_THRESHOLD && !refreshingRef.current;
+    const shouldRefresh = !disabled && pullDistanceRef.current >= PULL_THRESHOLD && !refreshingRef.current;
     touchStartYRef.current = null;
     isPointerDraggingRef.current = false;
 
     if (shouldRefresh) {
       triggerRefresh();
     } else if (!refreshingRef.current) {
-      setPullDistance(0);
+      updatePullDistance(0);
     }
   };
 

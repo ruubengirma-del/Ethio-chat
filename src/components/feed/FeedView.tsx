@@ -75,7 +75,13 @@ export const FeedView: React.FC<FeedViewProps> = ({
   const isPointerDraggingRef = useRef<boolean>(false);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshingRef = useRef<boolean>(false);
+  const pullDistanceRef = useRef<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  const updatePullDistance = useCallback((value: number) => {
+    pullDistanceRef.current = value;
+    setPullDistance(value);
+  }, []);
 
   const PULL_THRESHOLD = 62;
 
@@ -99,7 +105,7 @@ export const FeedView: React.FC<FeedViewProps> = ({
     touchStartYRef.current = null;
     isPointerDraggingRef.current = false;
     setIsRefreshing(true);
-    setPullDistance(PULL_THRESHOLD);
+    updatePullDistance(PULL_THRESHOLD);
 
     const startedAt = Date.now();
     try {
@@ -135,11 +141,11 @@ export const FeedView: React.FC<FeedViewProps> = ({
       }
       refreshingRef.current = false;
       setIsRefreshing(false);
-      setPullDistance(0);
+      updatePullDistance(0);
       setRefreshJustDone(true);
       setTimeout(() => setRefreshJustDone(false), 1800);
     }
-  }, [onMarkHomeSeen]);
+  }, [onMarkHomeSeen, updatePullDistance]);
 
   useEffect(() => {
     if (externalRefreshSignal > 0) {
@@ -163,7 +169,7 @@ export const FeedView: React.FC<FeedViewProps> = ({
     if (touchStartYRef.current === null || refreshingRef.current) return;
     if (!isAtTopOfScroll()) {
       touchStartYRef.current = null;
-      setPullDistance(0);
+      updatePullDistance(0);
       if (holdTimerRef.current) {
         clearTimeout(holdTimerRef.current);
         holdTimerRef.current = null;
@@ -173,7 +179,7 @@ export const FeedView: React.FC<FeedViewProps> = ({
 
     const delta = clientY - touchStartYRef.current;
     if (delta <= 0) {
-      setPullDistance(0);
+      updatePullDistance(0);
       if (holdTimerRef.current) {
         clearTimeout(holdTimerRef.current);
         holdTimerRef.current = null;
@@ -182,7 +188,7 @@ export const FeedView: React.FC<FeedViewProps> = ({
     }
 
     const damped = Math.min(92, Math.round(delta * 0.52));
-    setPullDistance(damped);
+    updatePullDistance(damped);
 
     // If user pulls down past threshold and holds briefly (~380ms), trigger refresh automatically
     if (damped >= PULL_THRESHOLD) {
@@ -202,14 +208,14 @@ export const FeedView: React.FC<FeedViewProps> = ({
       clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
     }
-    const shouldRefresh = pullDistance >= PULL_THRESHOLD && !refreshingRef.current;
+    const shouldRefresh = pullDistanceRef.current >= PULL_THRESHOLD && !refreshingRef.current;
     touchStartYRef.current = null;
     isPointerDraggingRef.current = false;
 
     if (shouldRefresh) {
       triggerFeedRefresh();
     } else if (!refreshingRef.current) {
-      setPullDistance(0);
+      updatePullDistance(0);
     }
   };
 
@@ -321,7 +327,7 @@ export const FeedView: React.FC<FeedViewProps> = ({
       onMouseLeave={() => {
         if (isPointerDraggingRef.current) endPullGesture();
       }}
-      className="max-w-xl mx-auto px-4 py-4 space-y-4 pb-24 overscroll-y-contain"
+      className="max-w-xl mx-auto px-4 py-4 space-y-4 pb-24 min-h-[calc(100dvh-8rem)] overscroll-y-contain"
     >
       {/* Pull-to-Refresh Indicator */}
       {(pullDistance > 8 || isRefreshing || refreshJustDone) && (
