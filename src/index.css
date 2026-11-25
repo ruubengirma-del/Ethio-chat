@@ -1,0 +1,82 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --rub-violet: #7560DF;
+    --rub-violet-light: #907CFC;
+    --rub-violet-dark: #5841C5;
+    --rub-violet-soft: #F1EDFE;
+  }
+
+  html,
+  body {
+    width: 100%;
+    min-height: 100dvh;
+    overflow-x: clip;
+  }
+
+  body {
+    font-family: var(--app-font, 'Plus Jakarta Sans', 'Inter', 'Noto Sans Ethiopic', system-ui, -apple-system, sans-serif);
+    -webkit-tap-highlight-color: transparent;
+    background-color: #ffffff;
+  }
+
+  html.dark body {
+    background-color: #090714;
+  }
+}
+
+/* Custom smooth scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(117, 96, 223, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(117, 96, 223, 0.45);
+}
+
+/* Safe areas for mobile devices */
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Audio waveform animation */
+@keyframes soundwave {
+  0%, 100% { height: 4px; }
+  50% { height: 24px; }
+}
+
+.animate-waveform {
+  animation: soundwave 1.2s ease-in-out infinite;
+}
+
+/* Protected media screenshot/print deterrence */
+.no-touch-callout {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media print {
+  .protected-media-guard {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+  }
+}
+

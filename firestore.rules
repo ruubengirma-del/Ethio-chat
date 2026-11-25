@@ -1,0 +1,1070 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helpers
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['userId', 'username', 'displayName', 'email']) &&
+        data.keys().hasOnly([
+          'userId', 'username', 'displayName', 'email', 'photoURL', 'coverURL', 'bio',
+          'followersCount', 'followingCount', 'hideOnlineStatus', 'profileViewsCount',
+          'closeFriendsExcludedIds', 'selectedFriendIds',
+          'lastSeenAt', 'lastSeenVisibility', 'readReceiptsEnabled',
+          'twoStepEnabled', 'twoStepPin', 'appLockEnabled', 'appLockPin',
+          'chatWallpaper', 'chatFontSize', 'fontStyle',
+          'fingerprintLockEnabled', 'fingerprintCredentialId',
+          'messageReactionsEnabled', 'autoDownloadMedia', 'lastBackupAt',
+          'reportsCount', 'warningActive', 'warningReasons', 'warningTriggeredAt', 'warningClearedReason',
+          'accountSuspended', 'suspendedAt', 'monthlySharesCount', 'monthlySharesMonth',
+          'passwordVersion', 'isPremium', 'goldVerified', 'subscriptionStatus', 'premiumStatus',
+          'subscriptionPackage', 'subscriptionStartDate', 'premiumStartDate',
+          'subscriptionExpiresAt', 'premiumExpiryDate', 'subscriptionDuration', 'approvedPaymentId',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 50 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.email is string && data.email.size() <= 200;
+    }
+
+    function isValidPost(data) {
+      return data.keys().hasAll(['postId', 'authorId', 'authorUsername', 'authorDisplayName', 'content', 'mediaType']) &&
+        data.keys().hasOnly([
+          'postId', 'authorId', 'authorUsername', 'authorDisplayName', 'authorPhotoURL',
+          'content', 'mediaUrl', 'mediaType', 'previewPhotos', 'totalPhotosCount',
+          'visibility', 'excludedUserIds', 'allowedUserIds',
+          'commentsDisabled', 'groupId', 'groupName',
+          'likesCount', 'commentsCount', 'sharesCount', 'viewsCount',
+          'reportsCount', 'editedAt', 'createdAt'
+        ]) &&
+        data.postId is string && data.postId.size() <= 128 &&
+        data.authorId is string && data.authorId.size() <= 128 &&
+        data.authorUsername is string && data.authorUsername.size() <= 50 &&
+        data.authorDisplayName is string && data.authorDisplayName.size() <= 100 &&
+        data.content is string && data.content.size() <= 2000 &&
+        data.mediaType in ['none', 'image', 'video'];
+    }
+
+    function isValidComment(data) {
+      return data.keys().hasAll(['commentId', 'postId', 'authorId', 'authorUsername', 'text']) &&
+        data.keys().hasOnly([
+          'commentId', 'postId', 'authorId', 'authorUsername', 'authorDisplayName',
+          'authorPhotoURL', 'text', 'mediaUrl', 'mediaType', 'audioDuration', 'mentions',
+          'parentCommentId', 'replyToAuthorId', 'replyToUsername',
+          'reactions', 'editedAt', 'createdAt'
+        ]) &&
+        data.commentId is string && data.commentId.size() <= 128 &&
+        data.postId is string && data.postId.size() <= 128 &&
+        data.authorId is string && data.authorId.size() <= 128 &&
+        data.text is string && data.text.size() <= 1000;
+    }
+
+    function isValidPostPhoto(data) {
+      return data.keys().hasAll(['photoId', 'postId', 'orderIndex', 'mediaUrl']) &&
+        data.keys().hasOnly([
+          'photoId', 'postId', 'orderIndex', 'mediaUrl', 'likesCount', 'commentsCount', 'createdAt'
+        ]) &&
+        data.photoId is string && data.photoId.size() <= 128 &&
+        data.postId is string && data.postId.size() <= 128 &&
+        data.orderIndex is number && data.orderIndex >= 0 && data.orderIndex < 200;
+    }
+
+    function isValidStory(data) {
+      return data.keys().hasAll(['storyId', 'authorId', 'authorUsername', 'authorDisplayName', 'mediaType', 'visibility']) &&
+        data.keys().hasOnly([
+          'storyId', 'authorId', 'authorUsername', 'authorDisplayName', 'authorPhotoURL',
+          'content', 'mediaUrl', 'mediaType', 'bgGradient', 'visibility',
+          'excludedUserIds', 'allowedUserIds', 'viewsCount', 'editedAt', 'createdAt', 'expiresAt'
+        ]) &&
+        data.storyId is string && data.storyId.size() <= 128 &&
+        data.authorId is string && data.authorId.size() <= 128 &&
+        data.mediaType in ['none', 'image', 'video'] &&
+        data.visibility in ['public', 'private', 'close_friends', 'select_friends'];
+    }
+
+    function isValidStoryView(data) {
+      return data.keys().hasAll(['viewerId', 'storyId', 'viewerUsername', 'viewerDisplayName', 'viewedAt']) &&
+        data.keys().hasOnly([
+          'viewerId', 'storyId', 'viewerUsername', 'viewerDisplayName', 'viewerPhotoURL',
+          'reactionEmoji', 'viewedAt', 'updatedAt'
+        ]) &&
+        data.viewerId is string && data.viewerId.size() <= 128 &&
+        data.storyId is string && data.storyId.size() <= 128;
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['messageId', 'chatId', 'senderId', 'receiverId', 'type']) &&
+        data.keys().hasOnly([
+          'messageId', 'chatId', 'senderId', 'senderUsername', 'senderDisplayName',
+          'senderPhotoURL', 'receiverId', 'type', 'text', 'mediaUrl', 'audioDuration',
+          'fileName', 'fileSize', 'mimeType', 'preventDownload',
+          'sharedPostId', 'sharedPostAuthorId', 'sharedPostAuthorName',
+          'sharedPostAuthorUsername', 'sharedPostAuthorPhoto',
+          'sharedPostContent', 'sharedPostMediaUrl', 'sharedPostMediaType',
+          'status', 'deletedFor', 'editedAt', 'readBy', 'readAt', 'reactions',
+          'expiresAfterSeconds', 'expiresAt', 'createdAt', 'localId'
+        ]) &&
+        data.messageId is string && data.messageId.size() <= 128 &&
+        data.chatId is string && data.chatId.size() <= 256 &&
+        data.senderId is string && data.senderId.size() <= 128 &&
+        data.receiverId is string && data.receiverId.size() <= 128 &&
+        data.type in ['text', 'image', 'audio', 'video', 'file', 'post'];
+    }
+
+    function isValidTeam(data) {
+      return data.keys().hasAll(['teamId', 'name', 'nameLower', 'isPublic', 'ownerId', 'memberCount']) &&
+        data.keys().hasOnly([
+          'teamId', 'name', 'nameLower', 'description', 'photoURL', 'isPublic',
+          'teamUsername', 'teamUsernameLower', 'ownerId', 'adminIds',
+          'memberCount', 'maxMembers', 'messagingLocked',
+          'lastMessage', 'lastMessageTime', 'lastSenderId', 'liveRoom',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.teamId is string && data.teamId.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        data.nameLower is string && data.nameLower.size() >= 1 && data.nameLower.size() <= 80 &&
+        data.isPublic is bool &&
+        data.ownerId is string && data.ownerId.size() <= 128 &&
+        data.memberCount is number && data.memberCount >= 1 && data.memberCount <= 70000000;
+    }
+
+    function isValidTeamMember(data) {
+      return data.keys().hasAll(['userId', 'teamId', 'username', 'displayName', 'role']) &&
+        data.keys().hasOnly(['userId', 'teamId', 'username', 'displayName', 'photoURL', 'role', 'joinedAt']) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.teamId is string && data.teamId.size() <= 128 &&
+        data.username is string && data.username.size() <= 50 &&
+        data.displayName is string && data.displayName.size() <= 100 &&
+        data.role in ['owner', 'admin', 'member'];
+    }
+
+    function isValidTeamMessage(data) {
+      return data.keys().hasAll(['messageId', 'teamId', 'senderId', 'type', 'text']) &&
+        data.keys().hasOnly([
+          'messageId', 'teamId', 'senderId', 'senderUsername', 'senderDisplayName', 'senderPhotoURL',
+          'type', 'text', 'mediaUrl', 'fileName', 'fileSize', 'mimeType', 'audioDuration',
+          'preventDownload', 'batchId', 'batchIndex', 'batchTotal',
+          'replyToMessageId', 'replyToSenderName', 'replyToText', 'reactions',
+          'expiresAfterSeconds', 'expiresAt', 'createdAt'
+        ]) &&
+        data.messageId is string && data.messageId.size() <= 128 &&
+        data.teamId is string && data.teamId.size() <= 128 &&
+        data.senderId is string && data.senderId.size() <= 128 &&
+        data.type in ['text', 'image', 'video', 'audio', 'pdf'];
+    }
+
+    function isValidGroup(data) {
+      return data.keys().hasAll(['groupId', 'name', 'nameLower', 'ownerId', 'memberIds', 'memberCount']) &&
+        data.keys().hasOnly([
+          'groupId', 'name', 'nameLower', 'description', 'photoURL',
+          'ownerId', 'adminIds', 'memberIds', 'memberCount', 'postingLocked',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.groupId is string && data.groupId.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 80 &&
+        data.nameLower is string && data.nameLower.size() >= 1 && data.nameLower.size() <= 80 &&
+        data.ownerId is string && data.ownerId.size() <= 128 &&
+        data.memberIds is list &&
+        data.memberCount is number && data.memberCount >= 0;
+    }
+
+    function isValidTeamLiveSeat(data) {
+      return data.keys().hasAll(['seatNumber', 'teamId']) &&
+        data.keys().hasOnly([
+          'seatNumber', 'teamId', 'userId', 'username', 'displayName', 'photoURL',
+          'micMuted', 'cameraOn', 'cameraFacing', 'updatedAt'
+        ]) &&
+        data.seatNumber is number && data.seatNumber >= 1 && data.seatNumber <= 6 &&
+        data.teamId is string && data.teamId.size() <= 128;
+    }
+
+    function isValidTeamLiveSeatRequest(data) {
+      return data.keys().hasAll(['requestId', 'teamId', 'seatNumber', 'userId', 'status']) &&
+        data.keys().hasOnly([
+          'requestId', 'teamId', 'seatNumber', 'userId', 'username', 'displayName', 'photoURL',
+          'status', 'createdAt'
+        ]) &&
+        data.requestId is string && data.requestId.size() <= 128 &&
+        data.teamId is string && data.teamId.size() <= 128 &&
+        data.seatNumber is number && data.seatNumber >= 2 && data.seatNumber <= 6 &&
+        data.status in ['pending', 'approved', 'declined'];
+    }
+
+    function isValidTeamLiveComment(data) {
+      return data.keys().hasAll(['commentId', 'teamId', 'authorId', 'authorUsername', 'authorDisplayName', 'text']) &&
+        data.keys().hasOnly([
+          'commentId', 'teamId', 'authorId', 'authorUsername', 'authorDisplayName', 'authorPhotoURL',
+          'text', 'photoUrl', 'emoji', 'createdAt'
+        ]) &&
+        data.commentId is string && data.commentId.size() <= 128 &&
+        data.teamId is string && data.teamId.size() <= 128 &&
+        data.authorId is string && data.authorId.size() <= 128 &&
+        data.text is string && data.text.size() <= 1000;
+    }
+
+    function isValidTeamLiveViewer(data) {
+      return data.keys().hasAll(['userId', 'teamId', 'lastPingAt']) &&
+        data.keys().hasOnly(['userId', 'teamId', 'username', 'displayName', 'lastPingAt']) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.teamId is string && data.teamId.size() <= 128 &&
+        data.lastPingAt is string && data.lastPingAt.size() <= 64;
+    }
+
+    function isValidMediaFile(data) {
+      return data.keys().hasAll(['mediaId', 'ownerId', 'scope', 'fileName', 'mimeType', 'totalSize', 'chunkSize', 'chunkCount']) &&
+        data.keys().hasOnly([
+          'mediaId', 'ownerId', 'scope', 'fileName', 'mimeType',
+          'totalSize', 'chunkSize', 'chunkCount', 'createdAt'
+        ]) &&
+        data.mediaId is string && data.mediaId.size() <= 128 &&
+        data.ownerId is string && data.ownerId.size() <= 128 &&
+        data.scope in ['post', 'chat'] &&
+        data.fileName is string && data.fileName.size() <= 255 &&
+        data.mimeType is string && data.mimeType.size() <= 150 &&
+        data.totalSize is number && data.totalSize > 0 && data.totalSize <= 830000000 &&
+        data.chunkSize is number && data.chunkSize > 0 && data.chunkSize <= 800000 &&
+        data.chunkCount is number && data.chunkCount >= 1 && data.chunkCount <= 2000;
+    }
+
+    function isValidMediaChunk(data) {
+      return data.keys().hasAll(['mediaId', 'chunkIndex', 'data']) &&
+        data.keys().hasOnly(['mediaId', 'chunkIndex', 'data']) &&
+        data.mediaId is string && data.mediaId.size() <= 128 &&
+        data.chunkIndex is number && data.chunkIndex >= 0 && data.chunkIndex < 2000 &&
+        data.data is bytes && data.data.size() <= 800000;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function hasAuthEmail() {
+      return isSignedIn() && request.auth.token.email is string;
+    }
+
+    function callerEmailLower() {
+      return hasAuthEmail() ? request.auth.token.email.lower() : '';
+    }
+
+    function isOwner() {
+      return isSignedIn() && (
+        request.auth.uid == 'aDB36ZT1j0QajDvQrMbkY1AGLSt2' ||
+        ('role' in request.auth.token && request.auth.token.role == 'owner') ||
+        ('owner' in request.auth.token && request.auth.token.owner == true) ||
+        (hasAuthEmail() && callerEmailLower() == 'ruubengirma@gmail.com')
+      );
+    }
+
+    function isAdminRole() {
+      return isSignedIn() && (
+        request.auth.uid == 'FDMMAibEmPhiCh3eJZ0AXkkg0622' ||
+        ('role' in request.auth.token && request.auth.token.role == 'admin') ||
+        ('admin' in request.auth.token && request.auth.token.admin == true) ||
+        (hasAuthEmail() && (
+          callerEmailLower() == 'ruubewallagga@gmail.com' ||
+          (
+            exists(/databases/$(database)/documents/appConfig/roles) &&
+            get(/databases/$(database)/documents/appConfig/roles).data.adminEmails is list &&
+            callerEmailLower() in get(/databases/$(database)/documents/appConfig/roles).data.adminEmails
+          )
+        ))
+      );
+    }
+
+    function isOwnerOrAdmin() {
+      return isOwner() || isAdminRole();
+    }
+
+    function isValidAppSubscriptionConfig(data) {
+      return data.keys().hasAll([
+          'configId', 'packages', 'telebirrAccountNumber', 'telebirrAccountName',
+          'cbeAccountNumber', 'cbeAccountName', 'binanceUid', 'subscriptionsEnabled'
+        ]) &&
+        data.keys().hasOnly([
+          'configId', 'packages', 'telebirrAccountNumber', 'telebirrAccountName',
+          'cbeAccountNumber', 'cbeAccountName', 'binanceUid', 'binancePaymentLink',
+          'binanceQrCodeUrl', 'subscriptionsEnabled', 'requireScreenshot', 'updatedAt', 'updatedByEmail'
+        ]) &&
+        data.configId == 'subscription' &&
+        data.packages is list && data.packages.size() >= 1 && data.packages.size() <= 10 &&
+        data.telebirrAccountNumber is string && data.telebirrAccountNumber.size() >= 3 && data.telebirrAccountNumber.size() <= 40 &&
+        data.telebirrAccountName is string && data.telebirrAccountName.size() >= 1 && data.telebirrAccountName.size() <= 100 &&
+        data.cbeAccountNumber is string && data.cbeAccountNumber.size() >= 3 && data.cbeAccountNumber.size() <= 40 &&
+        data.cbeAccountName is string && data.cbeAccountName.size() >= 1 && data.cbeAccountName.size() <= 100 &&
+        data.binanceUid is string && data.binanceUid.size() >= 3 && data.binanceUid.size() <= 64 &&
+        data.subscriptionsEnabled is bool &&
+        (!('binancePaymentLink' in data) || (data.binancePaymentLink is string && data.binancePaymentLink.size() <= 500)) &&
+        (!('binanceQrCodeUrl' in data) || (data.binanceQrCodeUrl is string && data.binanceQrCodeUrl.size() <= 900000)) &&
+        (!('requireScreenshot' in data) || data.requireScreenshot is bool) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64)) &&
+        (!('updatedByEmail' in data) || (data.updatedByEmail is string && data.updatedByEmail.size() <= 200));
+    }
+
+    function isValidAdminRolesConfig(data) {
+      return data.keys().hasAll(['configId', 'ownerEmail', 'adminEmails']) &&
+        data.keys().hasOnly(['configId', 'ownerEmail', 'adminEmails', 'updatedAt', 'updatedByEmail']) &&
+        data.configId == 'roles' &&
+        data.ownerEmail is string && data.ownerEmail.size() <= 200 &&
+        data.ownerEmail.lower() == 'ruubengirma@gmail.com' &&
+        data.adminEmails is list && data.adminEmails.size() <= 50 &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64)) &&
+        (!('updatedByEmail' in data) || (data.updatedByEmail is string && data.updatedByEmail.size() <= 200));
+    }
+
+    function isValidUserSubscription(data) {
+      return data.keys().hasAll([
+          'userId', 'packageId', 'packageLabel', 'durationMonths',
+          'status', 'startDate', 'expiresAt', 'expiresAtMs',
+          'paymentId', 'approvedByUid', 'approvedByRole'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'username', 'displayName', 'packageId', 'packageLabel',
+          'durationMonths', 'subscriptionDuration', 'status', 'premiumStatus',
+          'startDate', 'premiumStartDate', 'expiresAt', 'premiumExpiryDate', 'expiresAtMs',
+          'paymentId', 'approvedPaymentId', 'approvedByUid', 'approvedByEmail', 'approvedByRole',
+          'renewedAt', 'expiredAt', 'reminder7dPaymentId', 'reminder1dPaymentId', 'expiredNotifPaymentId',
+          'updatedAt'
+        ]) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.packageId is string && data.packageId.size() <= 64 &&
+        data.packageLabel is string && data.packageLabel.size() <= 80 &&
+        data.durationMonths is number && data.durationMonths >= 1 && data.durationMonths <= 60 &&
+        (!('subscriptionDuration' in data) || (data.subscriptionDuration is number && data.subscriptionDuration >= 1 && data.subscriptionDuration <= 60)) &&
+        data.status in ['active', 'expired', 'revoked'] &&
+        (!('premiumStatus' in data) || data.premiumStatus in ['active', 'expired', 'revoked']) &&
+        data.startDate is string && data.startDate.size() <= 64 &&
+        (!('premiumStartDate' in data) || (data.premiumStartDate is string && data.premiumStartDate.size() <= 64)) &&
+        data.expiresAt is string && data.expiresAt.size() <= 64 &&
+        (!('premiumExpiryDate' in data) || (data.premiumExpiryDate is string && data.premiumExpiryDate.size() <= 64)) &&
+        data.expiresAtMs is number && data.expiresAtMs > 0 &&
+        data.paymentId is string && data.paymentId.size() <= 128 &&
+        (!('approvedPaymentId' in data) || (data.approvedPaymentId is string && data.approvedPaymentId.size() <= 128)) &&
+        data.approvedByUid is string && data.approvedByUid.size() <= 128 &&
+        data.approvedByRole in ['owner', 'admin'] &&
+        (!('username' in data) || (data.username is string && data.username.size() <= 50)) &&
+        (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 100)) &&
+        (!('approvedByEmail' in data) || (data.approvedByEmail is string && data.approvedByEmail.size() <= 200)) &&
+        (!('renewedAt' in data) || (data.renewedAt is string && data.renewedAt.size() <= 64)) &&
+        (!('expiredAt' in data) || (data.expiredAt is string && data.expiredAt.size() <= 64)) &&
+        (!('reminder7dPaymentId' in data) || (data.reminder7dPaymentId is string && data.reminder7dPaymentId.size() <= 128)) &&
+        (!('reminder1dPaymentId' in data) || (data.reminder1dPaymentId is string && data.reminder1dPaymentId.size() <= 128)) &&
+        (!('expiredNotifPaymentId' in data) || (data.expiredNotifPaymentId is string && data.expiredNotifPaymentId.size() <= 128)) &&
+        (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
+    }
+
+    function isValidPaymentRequest(data) {
+      return data.keys().hasAll([
+          'paymentId', 'userId', 'username', 'displayName', 'email',
+          'packageId', 'packageLabel', 'durationMonths', 'method',
+          'amountUsd', 'amountEtb', 'status', 'submittedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'paymentId', 'uid', 'userId', 'username', 'displayName', 'email', 'photoURL',
+          'packageId', 'packageLabel', 'durationMonths', 'method',
+          'amountUsd', 'amountEtb', 'transactionId', 'normalizedTransactionId',
+          'screenshotUrl', 'screenshotStoragePath', 'screenshotId',
+          'status', 'rejectionReason', 'submittedAt', 'submittedAtMs',
+          'reviewedAt', 'reviewedByUid', 'reviewedByEmail', 'reviewedByRole',
+          'approvedBy', 'approvedAt', 'rejectedBy', 'rejectedAt'
+        ]) &&
+        data.paymentId is string && data.paymentId.size() <= 128 &&
+        data.userId is string && data.userId.size() <= 128 &&
+        (!('uid' in data) || (data.uid is string && data.uid == data.userId)) &&
+        data.username is string && data.username.size() <= 50 &&
+        data.displayName is string && data.displayName.size() <= 100 &&
+        data.email is string && data.email.size() <= 200 &&
+        data.packageId is string && data.packageId.size() <= 64 &&
+        data.packageLabel is string && data.packageLabel.size() <= 80 &&
+        data.durationMonths is number && data.durationMonths >= 1 && data.durationMonths <= 60 &&
+        data.method in ['telebirr', 'cbe', 'binance'] &&
+        data.amountUsd is number && data.amountUsd > 0 &&
+        data.amountEtb is number && data.amountEtb > 0 &&
+        (!('screenshotId' in data) || (data.screenshotId is string && data.screenshotId.size() <= 128)) &&
+        (!('screenshotUrl' in data) || (data.screenshotUrl is string && data.screenshotUrl.size() <= 900000)) &&
+        (!('screenshotStoragePath' in data) || (data.screenshotStoragePath is string && data.screenshotStoragePath.size() <= 300)) &&
+        (!('submittedAtMs' in data) || data.submittedAtMs is number) &&
+        data.status in ['pending', 'approved', 'rejected', 'PENDING', 'APPROVED', 'REJECTED'] &&
+        data.submittedAt is string && data.submittedAt.size() <= 64 &&
+        (
+          (
+            data.method == 'binance' &&
+            !('transactionId' in data) &&
+            !('normalizedTransactionId' in data)
+          ) ||
+          (
+            data.method in ['telebirr', 'cbe'] &&
+            data.transactionId is string && data.transactionId.size() >= 3 && data.transactionId.size() <= 120 &&
+            data.normalizedTransactionId is string && data.normalizedTransactionId.size() >= 3 && data.normalizedTransactionId.size() <= 120 &&
+            data.normalizedTransactionId.matches('^[A-Z0-9_\\-]+$')
+          )
+        ) &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500000)) &&
+        (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 500)) &&
+        (!('reviewedAt' in data) || (data.reviewedAt is string && data.reviewedAt.size() <= 64)) &&
+        (!('reviewedByUid' in data) || (data.reviewedByUid is string && data.reviewedByUid.size() <= 128)) &&
+        (!('reviewedByEmail' in data) || (data.reviewedByEmail is string && data.reviewedByEmail.size() <= 200)) &&
+        (!('reviewedByRole' in data) || data.reviewedByRole in ['owner', 'admin']) &&
+        (!('approvedBy' in data) || (data.approvedBy is string && data.approvedBy.size() <= 200)) &&
+        (!('approvedAt' in data) || (data.approvedAt is string && data.approvedAt.size() <= 64)) &&
+        (!('rejectedBy' in data) || (data.rejectedBy is string && data.rejectedBy.size() <= 200)) &&
+        (!('rejectedAt' in data) || (data.rejectedAt is string && data.rejectedAt.size() <= 64));
+    }
+
+    function isValidPaymentScreenshot(data) {
+      return data.keys().hasAll(['paymentId', 'userId', 'imageDataUrl', 'mimeType', 'createdAt']) &&
+        data.keys().hasOnly(['paymentId', 'userId', 'imageDataUrl', 'mimeType', 'fileSize', 'createdAt']) &&
+        data.paymentId is string && data.paymentId.size() <= 128 &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.imageDataUrl is string && data.imageDataUrl.size() >= 20 && data.imageDataUrl.size() <= 950000 &&
+        data.mimeType is string && data.mimeType.size() <= 100 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('fileSize' in data) || data.fileSize is number);
+    }
+
+    function isValidTransactionLock(data) {
+      return data.keys().hasAll(['txKey', 'method', 'normalizedTxId', 'userId', 'paymentId', 'createdAt']) &&
+        data.keys().hasOnly(['txKey', 'method', 'normalizedTxId', 'userId', 'paymentId', 'createdAt']) &&
+        data.txKey is string && data.txKey.size() <= 128 &&
+        data.method in ['telebirr', 'cbe'] &&
+        data.normalizedTxId is string && data.normalizedTxId.size() >= 3 && data.normalizedTxId.size() <= 120 &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.paymentId is string && data.paymentId.size() <= 128 &&
+        data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidUserPendingLock(data) {
+      return data.keys().hasAll(['userId', 'paymentId', 'createdAt']) &&
+        data.keys().hasOnly(['userId', 'paymentId', 'createdAt']) &&
+        data.userId is string && data.userId.size() <= 128 &&
+        data.paymentId is string && data.paymentId.size() <= 128 &&
+        data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidPaymentAuditLog(data) {
+      return data.keys().hasAll(['logId', 'action', 'actorUserId', 'actorEmail', 'actorRole', 'details', 'createdAt']) &&
+        data.keys().hasOnly([
+          'logId', 'action', 'paymentId', 'targetUserId', 'targetUsername',
+          'actorUserId', 'actorEmail', 'actorRole', 'details', 'rejectionReason', 'createdAt'
+        ]) &&
+        data.logId is string && data.logId.size() <= 128 &&
+        data.action in ['PAYMENT_APPROVED', 'PAYMENT_REJECTED', 'CONFIG_UPDATED', 'ADMIN_ADDED', 'ADMIN_REMOVED', 'SUBSCRIPTION_EXPIRED', 'SUBSCRIPTION_REVOKED'] &&
+        data.actorUserId is string && data.actorUserId.size() <= 128 &&
+        data.actorEmail is string && data.actorEmail.size() <= 200 &&
+        data.actorRole in ['owner', 'admin'] &&
+        data.details is string && data.details.size() <= 500 &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        (!('paymentId' in data) || (data.paymentId is string && data.paymentId.size() <= 128)) &&
+        (!('targetUserId' in data) || (data.targetUserId is string && data.targetUserId.size() <= 128)) &&
+        (!('targetUsername' in data) || (data.targetUsername is string && data.targetUsername.size() <= 50)) &&
+        (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 500));
+    }
+
+    function isValidDeviceAccountLock(data) {
+      return data.keys().hasAll(['deviceId', 'accountUids', 'accountCount', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['deviceId', 'accountUids', 'accountCount', 'createdAt', 'updatedAt']) &&
+        data.deviceId is string && data.deviceId.size() >= 4 && data.deviceId.size() <= 128 &&
+        data.accountUids is list &&
+        data.accountCount is number && data.accountCount == data.accountUids.size() &&
+        data.createdAt is string && data.createdAt.size() <= 64 &&
+        data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isTeamMember(teamId) {
+      return request.auth == null ||
+        exists(/databases/$(database)/documents/teams/$(teamId)/members/$(request.auth.uid));
+    }
+
+    function isTeamOwner(teamId) {
+      return request.auth == null ||
+        get(/databases/$(database)/documents/teams/$(teamId)).data.ownerId == request.auth.uid;
+    }
+
+    function isTeamOwnerOrAdmin(teamId) {
+      return request.auth == null ||
+        get(/databases/$(database)/documents/teams/$(teamId)).data.ownerId == request.auth.uid ||
+        (
+          get(/databases/$(database)/documents/teams/$(teamId)).data.adminIds is list &&
+          request.auth.uid in get(/databases/$(database)/documents/teams/$(teamId)).data.adminIds
+        ) ||
+        (
+          exists(/databases/$(database)/documents/teams/$(teamId)/members/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/teams/$(teamId)/members/$(request.auth.uid)).data.role in ['owner', 'admin']
+        );
+    }
+
+    // Collection Group Query support for Team Membership discovery
+    match /{path=**}/members/{memberDocId} {
+      allow read: if request.auth == null || resource.data.userId == request.auth.uid;
+    }
+
+    // Health check / connectivity test document
+    match /test/{docId} {
+      allow read: if true;
+    }
+
+    // Users Collection
+    match /users/{userId} {
+      allow read: if true;
+      allow create: if isValidId(userId) && isValidUser(incoming()) && incoming().userId == userId &&
+        !incoming().keys().hasAny([
+          'isPremium', 'goldVerified', 'subscriptionStatus', 'premiumStatus',
+          'subscriptionPackage', 'subscriptionStartDate', 'premiumStartDate',
+          'subscriptionExpiresAt', 'premiumExpiryDate', 'subscriptionDuration', 'approvedPaymentId'
+        ]);
+      allow update: if isValidId(userId) && incoming().userId == resource.data.userId && (
+        (
+          isOwnerOrAdmin() &&
+          incoming().diff(resource.data).affectedKeys().hasOnly([
+            'isPremium', 'goldVerified', 'subscriptionStatus', 'premiumStatus',
+            'subscriptionPackage', 'subscriptionStartDate', 'premiumStartDate',
+            'subscriptionExpiresAt', 'premiumExpiryDate', 'subscriptionDuration', 'approvedPaymentId',
+            'updatedAt'
+          ])
+        ) ||
+        (
+          isSignedIn() &&
+          request.auth.uid == userId &&
+          incoming().diff(resource.data).affectedKeys().hasOnly([
+            'isPremium', 'goldVerified', 'subscriptionStatus', 'premiumStatus', 'updatedAt'
+          ]) &&
+          incoming().isPremium == false &&
+          incoming().goldVerified == false &&
+          incoming().subscriptionStatus == 'expired' &&
+          incoming().premiumStatus == 'expired' &&
+          incoming().updatedAt is string && incoming().updatedAt.size() <= 64 &&
+          (
+            !exists(/databases/$(database)/documents/subscriptions/$(userId)) ||
+            get(/databases/$(database)/documents/subscriptions/$(userId)).data.status != 'active' ||
+            get(/databases/$(database)/documents/subscriptions/$(userId)).data.expiresAtMs <= request.time.toMillis()
+          )
+        ) ||
+        (
+          isValidUser(incoming()) &&
+          (
+            isOwnerOrAdmin() ||
+            !incoming().diff(resource.data).affectedKeys().hasAny([
+              'isPremium', 'goldVerified', 'subscriptionStatus', 'premiumStatus',
+              'subscriptionPackage', 'subscriptionStartDate', 'premiumStartDate',
+              'subscriptionExpiresAt', 'premiumExpiryDate', 'subscriptionDuration', 'approvedPaymentId'
+            ])
+          )
+        )
+      );
+      allow delete: if request.auth != null && request.auth.uid == userId;
+
+      match /devices/{deviceId} {
+        allow read: if true;
+        allow create, update: if isValidId(deviceId) && incoming().keys().hasAll(['deviceId', 'userId', 'deviceName']);
+        allow delete: if isValidId(deviceId);
+      }
+
+      match /blocked/{blockedUserId} {
+        allow read: if true;
+        allow create, update: if isValidId(blockedUserId) && incoming().keys().hasAll(['blockedUserId', 'username', 'displayName']);
+        allow delete: if isValidId(blockedUserId);
+      }
+
+      match /rubgpt/{messageId} {
+        allow read: if request.auth == null || request.auth.uid == userId;
+        allow create, update: if isValidId(messageId) &&
+          (request.auth == null || request.auth.uid == userId) &&
+          incoming().keys().hasAll(['id', 'role', 'text', 'timestamp']) &&
+          incoming().keys().hasOnly(['id', 'role', 'text', 'imageUrl', 'timestamp', 'editedAt']) &&
+          incoming().id is string && incoming().id.size() <= 128 &&
+          incoming().role in ['user', 'model'] &&
+          incoming().text is string && incoming().text.size() <= 16000 &&
+          incoming().timestamp is string && incoming().timestamp.size() <= 64;
+        allow delete: if isValidId(messageId) && (request.auth == null || request.auth.uid == userId);
+      }
+
+      match /fcmTokens/{tokenId} {
+        allow read: if request.auth == null || request.auth.uid == userId;
+        allow create, update: if isValidId(tokenId) &&
+          (request.auth == null || request.auth.uid == userId) &&
+          incoming().keys().hasAll(['tokenId', 'userId', 'token', 'updatedAt']) &&
+          incoming().keys().hasOnly(['tokenId', 'userId', 'token', 'platform', 'createdAt', 'updatedAt']) &&
+          incoming().tokenId == tokenId &&
+          incoming().userId == userId &&
+          incoming().token is string && incoming().token.size() >= 10 && incoming().token.size() <= 1024 &&
+          incoming().updatedAt is string && incoming().updatedAt.size() <= 64;
+        allow delete: if isValidId(tokenId) && (request.auth == null || request.auth.uid == userId);
+      }
+    }
+
+    // Unique Email Ownership Registry (1 Email = 1 Account Only)
+    match /emailLocks/{emailKey} {
+      allow read: if true;
+      allow create: if isValidId(emailKey) &&
+        incoming().keys().hasAll(['emailKey', 'email', 'userId']) &&
+        incoming().keys().hasOnly(['emailKey', 'email', 'userId', 'createdAt']) &&
+        incoming().emailKey == emailKey &&
+        incoming().email is string && incoming().email.size() <= 200 &&
+        incoming().userId is string && incoming().userId.size() <= 128;
+      allow delete: if isValidId(emailKey) && (request.auth == null || resource.data.userId == request.auth.uid);
+    }
+
+    // Unique Username Ownership Registry (1 Username = 1 Account Only, across signup and profile edit)
+    match /usernameLocks/{usernameKey} {
+      allow read: if true;
+      allow create: if isValidId(usernameKey) &&
+        !exists(/databases/$(database)/documents/usernameLocks/$(usernameKey)) &&
+        incoming().keys().hasAll(['usernameKey', 'username', 'userId']) &&
+        incoming().keys().hasOnly(['usernameKey', 'username', 'userId', 'createdAt']) &&
+        incoming().usernameKey == usernameKey &&
+        incoming().username is string && incoming().username.size() >= 3 && incoming().username.size() <= 50 &&
+        incoming().userId is string && incoming().userId.size() <= 128 &&
+        (request.auth == null || incoming().userId == request.auth.uid);
+      allow update: if false;
+      allow delete: if isValidId(usernameKey) && (request.auth == null || resource.data.userId == request.auth.uid);
+    }
+
+    // Global Public & Audience-Filtered Posts
+    match /posts/{postId} {
+      allow read: if true;
+      allow create: if isValidId(postId) && isValidPost(incoming()) && incoming().postId == postId;
+      allow update: if isValidId(postId) && isValidPost(incoming());
+      allow delete: if isValidId(postId);
+
+      // Likes subcollection
+      match /likes/{userId} {
+        allow read: if true;
+        allow create, update: if isValidId(userId) && incoming().keys().hasAll(['userId', 'postId']);
+        allow delete: if isValidId(userId);
+      }
+
+      // Comments subcollection
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create: if isValidId(commentId) && isValidComment(incoming()) && incoming().commentId == commentId;
+        allow update: if isValidId(commentId) && isValidComment(incoming());
+        allow delete: if isValidId(commentId);
+      }
+
+      // Multi-Photo Subcollection (up to 200 photos per post)
+      match /photos/{photoId} {
+        allow read: if true;
+        allow create: if isValidId(photoId) && isValidPostPhoto(incoming()) && incoming().photoId == photoId;
+        allow update: if isValidId(photoId) && isValidPostPhoto(incoming());
+        allow delete: if isValidId(photoId);
+
+        match /likes/{userId} {
+          allow read: if true;
+          allow create, update: if isValidId(userId) && incoming().keys().hasAll(['userId', 'photoId']);
+          allow delete: if isValidId(userId);
+        }
+
+        match /comments/{commentId} {
+          allow read: if true;
+          allow create: if isValidId(commentId) && isValidComment(incoming()) && incoming().commentId == commentId;
+          allow update: if isValidId(commentId) && isValidComment(incoming());
+          allow delete: if isValidId(commentId);
+        }
+      }
+    }
+
+    // Stories Collection
+    match /stories/{storyId} {
+      allow read: if true;
+      allow create: if isValidId(storyId) && isValidStory(incoming()) && incoming().storyId == storyId;
+      allow update: if isValidId(storyId) && isValidStory(incoming());
+      allow delete: if isValidId(storyId);
+
+      // Ordered story viewers & story-only emoji reactions
+      match /views/{viewerId} {
+        allow read: if true;
+        allow create, update: if isValidId(viewerId) && isValidStoryView(incoming()) && incoming().viewerId == viewerId;
+        allow delete: if isValidId(viewerId);
+      }
+    }
+
+    // Post Reports Collection (unique per reporter + post)
+    match /reports/{reportId} {
+      allow read: if true;
+      allow create: if isValidId(reportId) &&
+        incoming().keys().hasAll(['reportId', 'postId', 'postAuthorId', 'reporterId', 'reason', 'recipientEmail']) &&
+        incoming().keys().hasOnly([
+          'reportId', 'postId', 'postAuthorId', 'postAuthorUsername', 'postAuthorDisplayName',
+          'postContentSnippet', 'reporterId', 'reporterUsername', 'reporterDisplayName',
+          'reason', 'details', 'photoEvidenceUrl', 'videoEvidenceUrl', 'recipientEmail',
+          'emailSent', 'createdAt'
+        ]);
+      allow update: if isValidId(reportId);
+    }
+
+    // Account Warning Appeals Collection
+    match /appeals/{appealId} {
+      allow read: if true;
+      allow create, update: if isValidId(appealId) &&
+        incoming().keys().hasAll(['appealId', 'userId', 'username', 'message', 'status', 'recipientEmail']) &&
+        incoming().keys().hasOnly([
+          'appealId', 'userId', 'username', 'displayName', 'email', 'message',
+          'photoEvidenceUrl', 'videoEvidenceUrl', 'reportedReasons', 'reportsCountAtAppeal',
+          'status', 'recipientEmail', 'emailSent', 'createdAt', 'reviewedAt'
+        ]);
+    }
+
+    // Follows Collection — Only the account owner (follower or following) can read their follow lists
+    match /follows/{followId} {
+      allow read: if request.auth == null || resource.data.followerId == request.auth.uid || resource.data.followingId == request.auth.uid;
+      allow create: if isValidId(followId) && incoming().keys().hasAll(['followId', 'followerId', 'followingId']) && incoming().keys().hasOnly(['followId', 'followerId', 'followingId', 'createdAt']);
+      allow delete: if isValidId(followId);
+    }
+
+    // 1-on-1 Direct Chats Collection
+    match /chats/{chatId} {
+      allow read: if true;
+      allow create: if isValidId(chatId) && incoming().keys().hasAll(['chatId', 'participantIds']) && incoming().participantIds is list && incoming().participantIds.size() >= 1 && incoming().participantIds.size() <= 500;
+      allow update: if isValidId(chatId) && incoming().keys().hasAll(['chatId', 'participantIds']) && incoming().participantIds is list && incoming().participantIds.size() >= 1 && incoming().participantIds.size() <= 500 &&
+        (
+          request.auth == null ||
+          resource.data.get('isGroup', false) != true ||
+          !incoming().diff(resource.data).affectedKeys().hasAny(['participantIds']) ||
+          resource.data.createdBy == request.auth.uid ||
+          (resource.data.get('adminIds', []) is list && request.auth.uid in resource.data.get('adminIds', []))
+        );
+      allow delete: if isValidId(chatId) && (request.auth == null || resource.data.createdBy == request.auth.uid);
+
+      // Messages in Chat
+      match /messages/{messageId} {
+        allow read: if true;
+        allow create, update: if isValidId(messageId) && isValidMessage(incoming());
+        allow delete: if isValidId(messageId);
+      }
+    }
+
+    // Post-Only Groups Collection (searchable, joinable, posts go to Home feed)
+    match /groups/{groupId} {
+      allow read: if true;
+      allow create: if isValidId(groupId) && isValidGroup(incoming()) && incoming().groupId == groupId;
+      allow update: if isValidId(groupId) && isValidGroup(incoming()) &&
+        incoming().groupId == resource.data.groupId &&
+        incoming().ownerId == resource.data.ownerId;
+      allow delete: if isValidId(groupId) && (request.auth == null || resource.data.ownerId == request.auth.uid);
+    }
+
+    // Teams Collection (Supports up to 70,000,000 members via subcollection)
+    match /teams/{teamId} {
+      allow list: if resource.data.isPublic == true || request.auth == null || resource.data.ownerId == request.auth.uid;
+      allow get: if isValidId(teamId) && (resource.data.isPublic == true || isTeamMember(teamId));
+      allow create: if isValidId(teamId) && isValidTeam(incoming()) && incoming().teamId == teamId &&
+        (request.auth == null || incoming().ownerId == request.auth.uid);
+      allow update: if isValidId(teamId) && isValidTeam(incoming()) &&
+        incoming().teamId == resource.data.teamId &&
+        incoming().ownerId == resource.data.ownerId &&
+        (
+          request.auth == null ||
+          resource.data.ownerId == request.auth.uid ||
+          (!incoming().diff(resource.data).affectedKeys().hasAny(['name', 'nameLower', 'photoURL', 'liveRoom']))
+        );
+      allow delete: if isValidId(teamId) && (request.auth == null || resource.data.ownerId == request.auth.uid);
+
+      match /members/{userId} {
+        allow list: if isTeamMember(teamId);
+        allow get: if isValidId(userId) && isTeamMember(teamId);
+        allow create: if isValidId(userId) && isValidTeamMember(incoming()) && incoming().teamId == teamId &&
+          (
+            isTeamOwnerOrAdmin(teamId) ||
+            (
+              request.auth != null &&
+              request.auth.uid == userId &&
+              incoming().userId == request.auth.uid &&
+              incoming().role == 'member' &&
+              get(/databases/$(database)/documents/teams/$(teamId)).data.isPublic == true
+            )
+          );
+        allow update: if isValidId(userId) && isValidTeamMember(incoming()) && isTeamOwner(teamId);
+        allow delete: if isValidId(userId) && (
+          isTeamOwner(teamId) ||
+          (isTeamOwnerOrAdmin(teamId) && resource.data.role == 'member') ||
+          (request.auth != null && request.auth.uid == userId)
+        );
+      }
+
+      match /messages/{messageId} {
+        allow list: if isTeamMember(teamId);
+        allow get: if isValidId(messageId) && isTeamMember(teamId);
+        allow create, update: if isValidId(messageId) && isTeamMember(teamId) && isValidTeamMessage(incoming()) && incoming().teamId == teamId;
+        allow delete: if isValidId(messageId) && isTeamMember(teamId);
+      }
+
+      match /liveSeats/{seatId} {
+        allow list: if isTeamMember(teamId);
+        allow get: if isValidId(seatId) && isTeamMember(teamId);
+        allow create, update: if isValidId(seatId) && isTeamMember(teamId) && isValidTeamLiveSeat(incoming()) && incoming().teamId == teamId;
+        allow delete: if isValidId(seatId) && isTeamMember(teamId);
+      }
+
+      match /seatRequests/{requestId} {
+        allow list: if isTeamMember(teamId);
+        allow get: if isValidId(requestId) && isTeamMember(teamId);
+        allow create, update: if isValidId(requestId) && isTeamMember(teamId) && isValidTeamLiveSeatRequest(incoming()) && incoming().teamId == teamId;
+        allow delete: if isValidId(requestId) && isTeamMember(teamId);
+      }
+
+      match /liveComments/{commentId} {
+        allow list: if isTeamMember(teamId);
+        allow get: if isValidId(commentId) && isTeamMember(teamId);
+        allow create, update: if isValidId(commentId) && isTeamMember(teamId) && isValidTeamLiveComment(incoming()) && incoming().teamId == teamId;
+        allow delete: if isValidId(commentId) && isTeamMember(teamId);
+      }
+
+      match /liveViewers/{viewerId} {
+        allow list: if isTeamMember(teamId);
+        allow get: if isValidId(viewerId) && isTeamMember(teamId);
+        allow create, update: if isValidId(viewerId) && isTeamMember(teamId) && isValidTeamLiveViewer(incoming()) && incoming().teamId == teamId && incoming().userId == viewerId;
+        allow delete: if isValidId(viewerId) && (isTeamMember(teamId) || (request.auth != null && request.auth.uid == viewerId));
+      }
+    }
+
+    // Notifications Collection
+    match /notifications/{notificationId} {
+      allow read: if true;
+      allow create: if isValidId(notificationId) && incoming().keys().hasAll(['notificationId', 'recipientId', 'actorId', 'type']);
+      allow update: if isValidId(notificationId) && (
+        incoming().keys().hasAll(['notificationId', 'recipientId', 'actorId', 'type']) ||
+        (incoming().diff(resource.data).affectedKeys().hasOnly(['read']) && incoming().read is bool)
+      );
+      allow delete: if isValidId(notificationId);
+    }
+
+    // View Analytics Collection (1 unique stat doc per account per target)
+    match /viewStats/{statId} {
+      allow read: if true;
+      allow create: if isValidId(statId) &&
+        incoming().keys().hasAll(['statId', 'targetUserId', 'viewerId', 'kind', 'targetId', 'createdAt']) &&
+        incoming().keys().hasOnly(['statId', 'targetUserId', 'viewerId', 'kind', 'targetId', 'createdAt']) &&
+        incoming().statId == statId &&
+        incoming().kind in ['profile', 'post', 'story'] &&
+        (request.auth == null || incoming().viewerId == request.auth.uid);
+    }
+
+    // WebRTC Calls Signaling Collection
+    match /calls/{callId} {
+      allow read: if true;
+      allow create, update: if isValidId(callId) && incoming().keys().hasAll(['callId', 'chatId', 'callerId', 'calleeId', 'callType', 'status']);
+      allow delete: if isValidId(callId);
+
+      match /callerCandidates/{candId} {
+        allow read, create, delete: if true;
+      }
+      match /calleeCandidates/{candId} {
+        allow read, create, delete: if true;
+      }
+    }
+
+    // Persistent Cloud Video Storage (survives container restarts & works across all users until author deletes)
+    match /mediaFiles/{mediaId} {
+      allow read: if true;
+      allow create: if isValidId(mediaId) && isValidMediaFile(incoming()) && incoming().mediaId == mediaId &&
+        (request.auth == null || incoming().ownerId == request.auth.uid);
+      allow delete: if isValidId(mediaId) && (request.auth == null || resource.data.ownerId == request.auth.uid);
+
+      match /chunks/{chunkId} {
+        allow read: if true;
+        allow create: if isValidId(chunkId) && isValidMediaChunk(incoming()) && incoming().mediaId == mediaId &&
+          exists(/databases/$(database)/documents/mediaFiles/$(mediaId)) &&
+          (request.auth == null || get(/databases/$(database)/documents/mediaFiles/$(mediaId)).data.ownerId == request.auth.uid);
+        allow delete: if isValidId(chunkId) &&
+          exists(/databases/$(database)/documents/mediaFiles/$(mediaId)) &&
+          (request.auth == null || get(/databases/$(database)/documents/mediaFiles/$(mediaId)).data.ownerId == request.auth.uid);
+      }
+    }
+
+    // Owner-Managed App Configuration (Packages, Bank Accounts, Binance Pay, Admin Roles)
+    match /appConfig/{configId} {
+      allow get: if isValidId(configId) && (
+        configId == 'subscription' ||
+        (configId == 'roles' && isOwnerOrAdmin())
+      );
+      allow list: if isOwnerOrAdmin();
+      allow create, update: if isValidId(configId) && isOwner() && (
+        (configId == 'subscription' && isValidAppSubscriptionConfig(incoming())) ||
+        (configId == 'roles' && isValidAdminRolesConfig(incoming()))
+      );
+      allow delete: if false;
+    }
+
+    // Authoritative Premium Subscriptions & Gold Verified Badge Status (Owner/Admin writable; user can only self-expire after server expiry timestamp)
+    match /subscriptions/{userId} {
+      allow read: if true;
+      allow create: if isValidId(userId) &&
+        isOwnerOrAdmin() &&
+        isValidUserSubscription(incoming()) &&
+        incoming().userId == userId;
+      allow update: if isValidId(userId) && (
+        (
+          isOwnerOrAdmin() &&
+          isValidUserSubscription(incoming()) &&
+          incoming().userId == userId
+        ) ||
+        (
+          isSignedIn() &&
+          request.auth.uid == userId &&
+          isValidUserSubscription(incoming()) &&
+          incoming().userId == userId &&
+          resource.data.status == 'active' &&
+          resource.data.expiresAtMs <= request.time.toMillis() &&
+          incoming().status == 'expired' &&
+          (!('premiumStatus' in incoming()) || incoming().premiumStatus == 'expired') &&
+          incoming().diff(resource.data).affectedKeys().hasOnly([
+            'status', 'premiumStatus', 'expiredAt', 'expiredNotifPaymentId', 'updatedAt'
+          ])
+        )
+      );
+      allow delete: if false;
+    }
+
+    // Premium Payment Verification Requests (User submits pending; Owner/Admin Approves or Rejects)
+    match /premium_payment_requests/{paymentId} {
+      allow get: if isValidId(paymentId) && isSignedIn() &&
+        (resource.data.userId == request.auth.uid || isOwnerOrAdmin());
+      allow list: if isSignedIn() &&
+        (resource.data.userId == request.auth.uid || isOwnerOrAdmin());
+      allow create: if isValidId(paymentId) &&
+        isSignedIn() &&
+        isValidPaymentRequest(incoming()) &&
+        incoming().paymentId == paymentId &&
+        incoming().userId == request.auth.uid &&
+        incoming().status == 'pending' &&
+        existsAfter(/databases/$(database)/documents/userPendingLocks/$(request.auth.uid)) &&
+        (
+          incoming().method == 'binance' ||
+          existsAfter(/databases/$(database)/documents/transactionLocks/$(incoming().method + '_' + incoming().normalizedTransactionId))
+        );
+      allow update: if isValidId(paymentId) &&
+        isOwnerOrAdmin() &&
+        resource.data.status in ['pending', 'PENDING'] &&
+        incoming().status in ['approved', 'rejected'] &&
+        incoming().reviewedByUid == request.auth.uid &&
+        incoming().reviewedByRole in ['owner', 'admin'] &&
+        incoming().diff(resource.data).affectedKeys().hasOnly([
+          'status', 'rejectionReason', 'reviewedAt',
+          'reviewedByUid', 'reviewedByEmail', 'reviewedByRole',
+          'approvedBy', 'approvedAt', 'rejectedBy', 'rejectedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // Legacy Payment Requests (kept for read/migration compatibility)
+    match /paymentRequests/{paymentId} {
+      allow get: if isValidId(paymentId) && isSignedIn() &&
+        (resource.data.userId == request.auth.uid || isOwnerOrAdmin());
+      allow list: if isSignedIn() &&
+        (resource.data.userId == request.auth.uid || isOwnerOrAdmin());
+      allow create: if isValidId(paymentId) &&
+        isSignedIn() &&
+        isValidPaymentRequest(incoming()) &&
+        incoming().paymentId == paymentId &&
+        incoming().userId == request.auth.uid &&
+        incoming().status in ['pending', 'PENDING'] &&
+        existsAfter(/databases/$(database)/documents/userPendingLocks/$(request.auth.uid)) &&
+        (
+          incoming().method == 'binance' ||
+          existsAfter(/databases/$(database)/documents/transactionLocks/$(incoming().method + '_' + incoming().normalizedTransactionId))
+        );
+      allow update: if isValidId(paymentId) &&
+        isOwnerOrAdmin() &&
+        isValidPaymentRequest(incoming()) &&
+        resource.data.status in ['pending', 'PENDING'] &&
+        incoming().status in ['approved', 'rejected', 'APPROVED', 'REJECTED'] &&
+        incoming().diff(resource.data).affectedKeys().hasOnly([
+          'status', 'rejectionReason', 'reviewedAt',
+          'reviewedByUid', 'reviewedByEmail', 'reviewedByRole'
+        ]);
+      allow delete: if false;
+    }
+
+    // Private Payment Receipt Screenshots (Strictly User who uploaded + Owner + Admin)
+    match /paymentScreenshots/{paymentId} {
+      allow get: if isValidId(paymentId) && isSignedIn() && (
+        isOwnerOrAdmin() ||
+        resource.data.userId == request.auth.uid ||
+        (
+          exists(/databases/$(database)/documents/premium_payment_requests/$(paymentId)) &&
+          get(/databases/$(database)/documents/premium_payment_requests/$(paymentId)).data.userId == request.auth.uid
+        ) ||
+        (
+          exists(/databases/$(database)/documents/paymentRequests/$(paymentId)) &&
+          get(/databases/$(database)/documents/paymentRequests/$(paymentId)).data.userId == request.auth.uid
+        )
+      );
+      allow list: if isOwnerOrAdmin();
+      allow create: if isValidId(paymentId) &&
+        isSignedIn() &&
+        isValidPaymentScreenshot(incoming()) &&
+        incoming().paymentId == paymentId &&
+        incoming().userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Global Transaction ID Uniqueness Locks (Telebirr & CBE)
+    match /transactionLocks/{txKey} {
+      allow get: if isValidId(txKey) && isSignedIn();
+      allow list: if isOwnerOrAdmin();
+      allow create: if isValidId(txKey) &&
+        isSignedIn() &&
+        isValidTransactionLock(incoming()) &&
+        incoming().txKey == txKey &&
+        incoming().userId == request.auth.uid &&
+        !exists(/databases/$(database)/documents/transactionLocks/$(txKey));
+      allow update: if false;
+      allow delete: if isValidId(txKey) && isOwner();
+    }
+
+    // One Pending Payment Per User Lock
+    match /userPendingLocks/{userId} {
+      allow get: if isValidId(userId) && isSignedIn() && (request.auth.uid == userId || isOwnerOrAdmin());
+      allow list: if isOwnerOrAdmin();
+      allow create: if isValidId(userId) &&
+        isSignedIn() &&
+        isValidUserPendingLock(incoming()) &&
+        userId == request.auth.uid &&
+        incoming().userId == request.auth.uid &&
+        !exists(/databases/$(database)/documents/userPendingLocks/$(userId));
+      allow delete: if isValidId(userId) && isOwnerOrAdmin();
+      allow update: if false;
+    }
+
+    // Immutable Payment & Config Audit Trail
+    match /paymentAuditLogs/{logId} {
+      allow get, list: if isOwnerOrAdmin();
+      allow create: if isValidId(logId) &&
+        isOwnerOrAdmin() &&
+        isValidPaymentAuditLog(incoming()) &&
+        incoming().logId == logId &&
+        incoming().actorUserId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Device-level 5-account creation cap (Owner & Admin exempt)
+    match /deviceAccountLocks/{deviceId} {
+      allow get: if isValidId(deviceId);
+      allow list: if isOwnerOrAdmin();
+      allow create: if isValidId(deviceId) &&
+        isSignedIn() &&
+        isValidDeviceAccountLock(incoming()) &&
+        incoming().deviceId == deviceId &&
+        (isOwnerOrAdmin() || incoming().accountUids.size() <= 5);
+      allow update: if isValidId(deviceId) &&
+        isSignedIn() &&
+        isValidDeviceAccountLock(incoming()) &&
+        incoming().deviceId == resource.data.deviceId &&
+        incoming().accountUids.hasAll(resource.data.accountUids) &&
+        (isOwnerOrAdmin() || incoming().accountUids.size() <= 5);
+      allow delete: if false;
+    }
+  }
+}

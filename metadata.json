@@ -1,0 +1,6 @@
+{
+  "name": "Ethio Chat",
+  "description": "Ethio Chat is a modern hybrid social media and real-time messaging application with offline sync, global feed, voice notes, and profile management in Rub Violet theme.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

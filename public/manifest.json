@@ -1,0 +1,32 @@
+{
+  "id": "/",
+  "name": "Ethio Chat - Social & Messenger",
+  "short_name": "Ethio Chat",
+  "description": "Ethiopian social media & real-time messaging app with offline sync and Rub Violet theme.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#7560DF",
+  "background_color": "#0d0b18",
+  "icons": [
+    {
+      "src": "/assets/aistudio/20261111_152710_57efcc53.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/aistudio/20261111_152710_57efcc53.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/aistudio/20261111_152710_57efcc53.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
