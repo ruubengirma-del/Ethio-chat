@@ -14,7 +14,7 @@ export default defineConfig(() => {
         manifest: false, // Uses public/manifest.json already linked in index.html
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
-          navigateFallbackDenylist: [/^\/api\//, /^\/ws\//],
+          navigateFallbackDenylist: [/^\/api\//, /^\/ws\//, /^\/\.well-known\//],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         },
         devOptions: {

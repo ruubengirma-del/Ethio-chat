@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.onrender.ethio_chat.twa",
+      "sha256_cert_fingerprints": [
+        "A1:2A:F5:E3:0A:FB:27:D9:A2:6C:93:34:27:6D:85:0C:E1:4F:F3:5B:C2:67:4F:F1:B8:BD:25:D1:8A:02:8E:2D"
+      ]
+    }
+  }
+]

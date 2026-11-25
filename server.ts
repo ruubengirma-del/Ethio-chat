@@ -2666,6 +2666,21 @@ async function runBackgroundAdminLifecycleSweep() {
 async function startServer() {
   const httpServer = http.createServer(app);
 
+  app.get('/.well-known/assetlinks.json', (_req, res) => {
+    const candidates = [
+      path.resolve(__dirname, 'dist', '.well-known', 'assetlinks.json'),
+      path.resolve(__dirname, 'public', '.well-known', 'assetlinks.json'),
+    ];
+    const found = candidates.find((p) => fs.existsSync(p));
+    if (!found) {
+      res.status(404).json({ error: 'assetlinks.json not found' });
+      return;
+    }
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.sendFile(found);
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -2684,7 +2699,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, { dotfiles: 'allow' }));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
