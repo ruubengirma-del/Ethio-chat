@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Team,
   TeamLiveSeat,
@@ -44,13 +44,15 @@ import {
   Loader2,
   Smile,
   Eye,
-  ShieldAlert
+  ShieldAlert,
+  Volume2
 } from 'lucide-react';
 import {
   acquireMediaWithFallback,
   acquireVideoTrackOnly,
   consumePrimedStream,
 } from '../../lib/mediaPermissions';
+import { DEFAULT_RTC_CONFIG, getRtcConfiguration } from '../../lib/rtcConfig';
 
 interface TeamLiveStageModalProps {
   team: Team;
@@ -69,24 +71,27 @@ interface RemotePeerInfo {
   cameraOn: boolean;
 }
 
-const RTC_CONFIG: RTCConfiguration = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ],
-};
+interface PeerSignalState {
+  pc: RTCPeerConnection;
+  makingOffer: boolean;
+  ignoreOffer: boolean;
+  isSettingRemoteAnswerPending: boolean;
+  negotiating: boolean;
+  pendingNegotiate: boolean;
+  iceRestartTimer: ReturnType<typeof setTimeout> | null;
+}
 
 const SEAT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
-// Strictly bounded single seat video/audio player — renders ONLY inside that specific seat slot
-const SeatVideoSlot: React.FC<{ stream: MediaStream; muted?: boolean }> = ({ stream, muted }) => {
+// Strictly bounded single seat video player — audio is played via PeerAudioSink to avoid duplicate echo & autoplay blocks
+const SeatVideoSlot: React.FC<{ stream: MediaStream }> = ({ stream }) => {
   const ref = useRef<HTMLVideoElement | null>(null);
   useEffect(() => {
     const el = ref.current;
-    if (el) {
-      el.srcObject = stream;
-      el.play().catch(() => {});
-    }
+    if (!el) return;
+    const videoTracks = stream.getVideoTracks();
+    el.srcObject = videoTracks.length > 0 ? new MediaStream(videoTracks) : stream;
+    el.play().catch(() => {});
   }, [stream]);
 
   return (
@@ -94,23 +99,41 @@ const SeatVideoSlot: React.FC<{ stream: MediaStream; muted?: boolean }> = ({ str
       ref={ref}
       autoPlay
       playsInline
-      muted={Boolean(muted)}
+      muted
       className="w-full h-full object-cover"
     />
   );
 };
 
-// Hidden audio sink so unseated audience and seated participants hear every seated speaker even if camera is OFF
-const PeerAudioSink: React.FC<{ stream: MediaStream }> = ({ stream }) => {
+// Accessible audio sink (sr-only, not display:none) so all listeners hear seated speakers even if camera is OFF
+const PeerAudioSink: React.FC<{
+  stream: MediaStream;
+  unlockTick: number;
+  onAutoplayBlocked: () => void;
+  onAudioPlaying: () => void;
+}> = ({ stream, unlockTick, onAutoplayBlocked, onAudioPlaying }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
     const el = audioRef.current;
-    if (el) {
-      el.srcObject = stream;
-      el.play().catch(() => {});
+    if (!el) return;
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      el.srcObject = null;
+      return;
     }
-  }, [stream]);
-  return <audio ref={audioRef} autoPlay className="hidden" />;
+    el.srcObject = new MediaStream(audioTracks);
+    el.muted = false;
+    el.volume = 1;
+    el.play()
+      .then(() => onAudioPlaying())
+      .catch((err) => {
+        if (err && err.name === 'NotAllowedError') {
+          onAutoplayBlocked();
+        }
+      });
+  }, [stream, unlockTick, onAutoplayBlocked, onAudioPlaying]);
+
+  return <audio ref={audioRef} autoPlay playsInline className="sr-only" />;
 };
 
 function findLiveTransceiver(pc: RTCPeerConnection, kind: 'audio' | 'video'): RTCRtpTransceiver | undefined {
@@ -156,14 +179,29 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
   const commentPhotoInputRef = useRef<HTMLInputElement>(null);
   const commentsEndRef = useRef<HTMLDivElement>(null);
 
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const [audioUnlockTick, setAudioUnlockTick] = useState(0);
+  const handleAutoplayBlocked = useCallback(() => setAudioBlocked(true), []);
+  const handleAudioPlaying = useCallback(() => setAudioBlocked(false), []);
+
   const wsRef = useRef<WebSocket | null>(null);
-  const pcsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const peerStatesRef = useRef<Map<string, PeerSignalState>>(new Map());
+  const remoteTrackMapRef = useRef<Map<string, Map<string, MediaStreamTrack>>>(new Map());
   const pendingIceMapRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
+  const rtcConfigRef = useRef<RTCConfiguration>(DEFAULT_RTC_CONFIG);
   const localStreamRef = useRef<MediaStream | null>(null);
   const mySeatRef = useRef<number | null>(null);
   const cameraOnRef = useRef<boolean>(isVideoRoom);
   const cameraFacingRef = useRef<'user' | 'environment'>('user');
   const micMutedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    getRtcConfiguration()
+      .then((cfg) => {
+        rtcConfigRef.current = cfg;
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     cameraOnRef.current = cameraOn;
@@ -318,7 +356,7 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
     commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [liveComments.length]);
 
-  // Close all peer connections and stop local stream
+  // Close local stream
   const stopLocalMedia = () => {
     try {
       localStreamRef.current?.getTracks().forEach((tr) => tr.stop());
@@ -327,46 +365,67 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
     setLocalStream(null);
   };
 
+  const refreshRemotePeerStream = (remoteUserId: string) => {
+    const map = remoteTrackMapRef.current.get(remoteUserId);
+    if (!map) return;
+    const liveTracks = Array.from(map.values()).filter((t) => t.readyState === 'live');
+    setRemoteStreams((prev) => ({
+      ...prev,
+      [remoteUserId]: new MediaStream(liveTracks),
+    }));
+  };
+
+  // Sync tracks on a single RTCPeerConnection without creating unmatched outbound transceivers
+  const syncTracksToSinglePeer = async (
+    pc: RTCPeerConnection,
+    stream: MediaStream | null,
+    seated: boolean
+  ): Promise<boolean> => {
+    if (pc.signalingState === 'closed') return false;
+    let needsRenegotiation = false;
+    const audioTrack = seated ? stream?.getAudioTracks()[0] || null : null;
+    const videoTrack = seated ? stream?.getVideoTracks()[0] || null : null;
+
+    const audioTransceiver = findLiveTransceiver(pc, 'audio');
+    if (audioTransceiver) {
+      const targetDir: RTCRtpTransceiverDirection = seated ? 'sendrecv' : 'recvonly';
+      if (audioTransceiver.direction !== targetDir) {
+        audioTransceiver.direction = targetDir;
+        needsRenegotiation = true;
+      }
+      await audioTransceiver.sender.replaceTrack(audioTrack).catch(() => {});
+    } else if (seated && audioTrack && stream) {
+      try {
+        pc.addTrack(audioTrack, stream);
+        needsRenegotiation = true;
+      } catch {}
+    }
+
+    const videoTransceiver = findLiveTransceiver(pc, 'video');
+    if (videoTransceiver) {
+      const targetDir: RTCRtpTransceiverDirection = seated ? 'sendrecv' : 'recvonly';
+      if (videoTransceiver.direction !== targetDir) {
+        videoTransceiver.direction = targetDir;
+        needsRenegotiation = true;
+      }
+      await videoTransceiver.sender.replaceTrack(videoTrack).catch(() => {});
+    } else if (seated && videoTrack && stream) {
+      try {
+        pc.addTrack(videoTrack, stream);
+        needsRenegotiation = true;
+      } catch {}
+    }
+
+    return needsRenegotiation;
+  };
+
   // Sync tracks on all open RTCPeerConnections cleanly WITHOUT tearing down audio
   const syncStreamToPeers = async (stream: MediaStream | null, seated: boolean): Promise<boolean> => {
     let needsRenegotiation = false;
-    const audioTrack = stream?.getAudioTracks()[0] || null;
-    const videoTrack = stream?.getVideoTracks()[0] || null;
-
-    for (const pc of pcsRef.current.values()) {
-      if (pc.signalingState === 'closed') continue;
-
-      const audioTransceiver = findLiveTransceiver(pc, 'audio');
-      if (audioTransceiver) {
-        const targetDir: RTCRtpTransceiverDirection = seated ? 'sendrecv' : 'recvonly';
-        if (audioTransceiver.direction !== targetDir) {
-          audioTransceiver.direction = targetDir;
-          needsRenegotiation = true;
-        }
-        await audioTransceiver.sender.replaceTrack(seated ? audioTrack : null).catch(() => {});
-      } else if (seated && audioTrack && stream) {
-        try {
-          pc.addTrack(audioTrack, stream);
-          needsRenegotiation = true;
-        } catch {}
-      }
-
-      const videoTransceiver = findLiveTransceiver(pc, 'video');
-      if (videoTransceiver) {
-        const targetDir: RTCRtpTransceiverDirection = seated ? 'sendrecv' : 'recvonly';
-        if (videoTransceiver.direction !== targetDir) {
-          videoTransceiver.direction = targetDir;
-          needsRenegotiation = true;
-        }
-        await videoTransceiver.sender.replaceTrack(seated ? videoTrack : null).catch(() => {});
-      } else if (seated && videoTrack && stream) {
-        try {
-          pc.addTrack(videoTrack, stream);
-          needsRenegotiation = true;
-        } catch {}
-      }
+    for (const state of peerStatesRef.current.values()) {
+      const changed = await syncTracksToSinglePeer(state.pc, stream, seated);
+      if (changed) needsRenegotiation = true;
     }
-
     return needsRenegotiation;
   };
 
@@ -391,23 +450,56 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
     }
   };
 
-  const renegotiateAllPeers = async () => {
+  const negotiateWithPeer = async (peerId: string) => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    for (const [peerId, pc] of pcsRef.current.entries()) {
-      if (pc.signalingState === 'closed') continue;
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
+    const state = peerStatesRef.current.get(peerId);
+    if (!ws || ws.readyState !== WebSocket.OPEN || !state) return;
+    const { pc } = state;
+    if (pc.signalingState === 'closed') return;
+
+    if (state.negotiating) {
+      state.pendingNegotiate = true;
+      return;
+    }
+
+    if (pc.signalingState !== 'stable') {
+      state.pendingNegotiate = true;
+      return;
+    }
+
+    state.negotiating = true;
+    state.makingOffer = true;
+    try {
+      const offer = await pc.createOffer();
+      if (pc.signalingState !== 'stable') return;
+      await pc.setLocalDescription(offer);
+      if (ws.readyState === WebSocket.OPEN) {
         ws.send(
           JSON.stringify({
             type: 'webrtc-offer',
             toUserId: peerId,
-            sdp: { type: offer.type, sdp: offer.sdp },
+            sdp: { type: pc.localDescription?.type || offer.type, sdp: pc.localDescription?.sdp || offer.sdp },
           })
         );
-      } catch {}
+      }
+    } catch {
+      // ignore transient signaling error
+    } finally {
+      state.makingOffer = false;
+      state.negotiating = false;
+      if (state.pendingNegotiate && pc.signalingState === 'stable') {
+        state.pendingNegotiate = false;
+        void negotiateWithPeer(peerId);
+      }
     }
+  };
+
+  const renegotiateAllPeers = async () => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    await Promise.all(
+      Array.from(peerStatesRef.current.keys()).map((peerId) => negotiateWithPeer(peerId))
+    );
   };
 
   const flushPeerIce = async (peerId: string, pc: RTCPeerConnection) => {
@@ -429,7 +521,7 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
     if (!isSeated) {
       stopLocalMedia();
       syncStreamToPeers(null, false).then((reneg) => {
-        if (reneg) renegotiateAllPeers();
+        if (reneg) void renegotiateAllPeers();
       });
       broadcastMediaState(null, true, false);
       return;
@@ -472,7 +564,7 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
       broadcastMediaState(mySeat, micMutedRef.current, nextCamState);
     };
 
-    setupMedia();
+    void setupMedia();
 
     return () => {
       active = false;
@@ -483,6 +575,7 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
   const handleRetryMedia = async () => {
     if (retryingMedia || mySeat === null) return;
     setRetryingMedia(true);
+    setAudioUnlockTick((c) => c + 1);
     try {
       const wantVideo = isVideoRoom;
       const res = await acquireMediaWithFallback({
@@ -514,6 +607,7 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
   // Toggle Mic Mute (and acquire mic inside user gesture if previously denied)
   const handleToggleMic = async () => {
     if (mySeat === null) return;
+    setAudioUnlockTick((c) => c + 1);
     const existingAudio = localStreamRef.current?.getAudioTracks() || [];
     if (existingAudio.length === 0) {
       const res = await acquireMediaWithFallback({ wantAudio: true, wantVideo: false });
@@ -534,7 +628,7 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
           return;
         }
       }
-      if (res.errorMessage) setMediaNotice(res.errorMessage);
+      if (res.errorMessage) setMediaErrorOrNotice(res.errorMessage);
       return;
     }
 
@@ -547,9 +641,12 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
     broadcastMediaState(mySeat, next, cameraOnRef.current);
   };
 
+  const setMediaErrorOrNotice = (msg: string) => setMediaNotice(msg);
+
   // Toggle Camera ON / OFF inside user gesture without disturbing live mic audio
   const handleToggleCamera = async () => {
     if (mySeat === null) return;
+    setAudioUnlockTick((c) => c + 1);
 
     if (cameraOn) {
       const current = localStreamRef.current;
@@ -626,44 +723,67 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
     broadcastMediaState(mySeat, micMutedRef.current, true);
   };
 
-  // Create or get RTCPeerConnection for a peer in the live room
-  const getOrCreatePeerConnection = (remoteUserId: string): RTCPeerConnection => {
-    const existing = pcsRef.current.get(remoteUserId);
-    if (existing && existing.signalingState !== 'closed') return existing;
+  // Create or get RTCPeerConnection + Perfect Negotiation state for a peer
+  const getOrCreatePeerState = (remoteUserId: string, initOutboundTransceivers = true): PeerSignalState => {
+    const existing = peerStatesRef.current.get(remoteUserId);
+    if (existing && existing.pc.signalingState !== 'closed') return existing;
 
-    const pc = new RTCPeerConnection(RTC_CONFIG);
-    pcsRef.current.set(remoteUserId, pc);
+    const pc = new RTCPeerConnection(rtcConfigRef.current);
+    const state: PeerSignalState = {
+      pc,
+      makingOffer: false,
+      ignoreOffer: false,
+      isSettingRemoteAnswerPending: false,
+      negotiating: false,
+      pendingNegotiate: false,
+      iceRestartTimer: null,
+    };
+    peerStatesRef.current.set(remoteUserId, state);
 
-    const isSeated = mySeatRef.current !== null;
-    const stream = localStreamRef.current;
-    const audioTrack = isSeated ? stream?.getAudioTracks()[0] || null : null;
-    const videoTrack = isSeated ? stream?.getVideoTracks()[0] || null : null;
+    if (initOutboundTransceivers) {
+      const isSeated = mySeatRef.current !== null;
+      const stream = localStreamRef.current;
+      const audioTrack = isSeated ? stream?.getAudioTracks()[0] || null : null;
+      const videoTrack = isSeated ? stream?.getVideoTracks()[0] || null : null;
 
-    if (audioTrack && stream) {
-      pc.addTrack(audioTrack, stream);
-    } else {
-      try {
-        pc.addTransceiver('audio', { direction: isSeated ? 'sendrecv' : 'recvonly' });
-      } catch {}
-    }
+      if (audioTrack && stream) {
+        pc.addTrack(audioTrack, stream);
+      } else {
+        try {
+          pc.addTransceiver('audio', { direction: isSeated ? 'sendrecv' : 'recvonly' });
+        } catch {}
+      }
 
-    if (videoTrack && stream) {
-      pc.addTrack(videoTrack, stream);
-    } else {
-      try {
-        pc.addTransceiver('video', { direction: isSeated ? 'sendrecv' : 'recvonly' });
-      } catch {}
+      if (videoTrack && stream) {
+        pc.addTrack(videoTrack, stream);
+      } else {
+        try {
+          pc.addTransceiver('video', { direction: isSeated ? 'sendrecv' : 'recvonly' });
+        } catch {}
+      }
     }
 
     pc.ontrack = (event) => {
       const track = event.track;
-      setRemoteStreams((prev) => {
-        const base = event.streams?.[0] || prev[remoteUserId] || new MediaStream();
-        if (!base.getTracks().some((t) => t.id === track.id)) {
-          base.addTrack(track);
-        }
-        return { ...prev, [remoteUserId]: new MediaStream(base.getTracks()) };
-      });
+      let trackMap = remoteTrackMapRef.current.get(remoteUserId);
+      if (!trackMap) {
+        trackMap = new Map();
+        remoteTrackMapRef.current.set(remoteUserId, trackMap);
+      }
+      trackMap.set(track.id, track);
+
+      track.onunmute = () => {
+        refreshRemotePeerStream(remoteUserId);
+      };
+      track.onmute = () => {
+        refreshRemotePeerStream(remoteUserId);
+      };
+      track.onended = () => {
+        trackMap?.delete(track.id);
+        refreshRemotePeerStream(remoteUserId);
+      };
+
+      refreshRemotePeerStream(remoteUserId);
     };
 
     pc.onicecandidate = (event) => {
@@ -678,153 +798,217 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
       }
     };
 
-    return pc;
-  };
-
-  // Real-Time WebSocket connection for Team Voice/Video stage
-  useEffect(() => {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${proto}//${window.location.host}/ws/team-live`;
-    const ws = new WebSocket(wsUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      ws.send(
-        JSON.stringify({
-          type: 'join-room',
-          teamId: team.teamId,
-          userId: currentUser.userId,
-          username: currentUser.username,
-          displayName: currentUser.displayName,
-          photoURL: currentUser.photoURL,
-          seatNumber: mySeatRef.current,
-          micMuted: micMutedRef.current,
-          cameraOn: cameraOnRef.current,
-        })
-      );
-    };
-
-    ws.onmessage = async (event) => {
-      try {
-        const msg = JSON.parse(String(event.data));
-        if (msg.type === 'room-peers') {
-          const list = (msg.peers || []) as RemotePeerInfo[];
-          setPeersInRoom(list);
-          for (const peer of list) {
-            if (peer.userId === currentUser.userId) continue;
-            if (currentUser.userId < peer.userId) {
-              const pc = getOrCreatePeerConnection(peer.userId);
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              ws.send(
-                JSON.stringify({
-                  type: 'webrtc-offer',
-                  toUserId: peer.userId,
-                  sdp: { type: offer.type, sdp: offer.sdp },
-                })
-              );
-            }
-          }
-        } else if (msg.type === 'peer-joined') {
-          if (Array.isArray(msg.peers)) setPeersInRoom(msg.peers);
-          const peer = msg.peer as RemotePeerInfo | undefined;
-          if (peer && peer.userId !== currentUser.userId && currentUser.userId < peer.userId) {
-            const pc = getOrCreatePeerConnection(peer.userId);
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            ws.send(
-              JSON.stringify({
-                type: 'webrtc-offer',
-                toUserId: peer.userId,
-                sdp: { type: offer.type, sdp: offer.sdp },
-              })
-            );
-          }
-        } else if (msg.type === 'media-state') {
-          if (Array.isArray(msg.peers)) setPeersInRoom(msg.peers);
-        } else if (msg.type === 'peer-left') {
-          if (Array.isArray(msg.peers)) setPeersInRoom(msg.peers);
-          const leftId = String(msg.userId || '');
-          const pc = pcsRef.current.get(leftId);
-          if (pc) {
-            pc.close();
-            pcsRef.current.delete(leftId);
-          }
-          pendingIceMapRef.current.delete(leftId);
-          setRemoteStreams((prev) => {
-            const copy = { ...prev };
-            delete copy[leftId];
-            return copy;
-          });
-        } else if (msg.type === 'webrtc-offer') {
-          const fromId = String(msg.fromUserId || '');
-          if (!fromId || !msg.sdp) return;
-          const pc = getOrCreatePeerConnection(fromId);
-          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-          await flushPeerIce(fromId, pc);
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          ws.send(
-            JSON.stringify({
-              type: 'webrtc-answer',
-              toUserId: fromId,
-              sdp: { type: answer.type, sdp: answer.sdp },
-            })
-          );
-        } else if (msg.type === 'webrtc-answer') {
-          const fromId = String(msg.fromUserId || '');
-          const pc = pcsRef.current.get(fromId);
-          if (pc && msg.sdp && pc.signalingState !== 'closed') {
-            await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-            await flushPeerIce(fromId, pc);
-          }
-        } else if (msg.type === 'webrtc-ice-candidate') {
-          const fromId = String(msg.fromUserId || '');
-          const pc = pcsRef.current.get(fromId);
-          if (pc && msg.candidate && pc.signalingState !== 'closed') {
-            if (pc.remoteDescription) {
-              await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {});
-            } else {
-              const queue = pendingIceMapRef.current.get(fromId) || [];
-              queue.push(msg.candidate);
-              pendingIceMapRef.current.set(fromId, queue);
-            }
-          }
+    pc.oniceconnectionstatechange = () => {
+      const iceState = pc.iceConnectionState;
+      const isInitiator = currentUser.userId < remoteUserId;
+      if (iceState === 'connected' || iceState === 'completed') {
+        if (state.iceRestartTimer) {
+          clearTimeout(state.iceRestartTimer);
+          state.iceRestartTimer = null;
         }
-      } catch {
-        // ignore packet error
+      } else if (iceState === 'disconnected' && isInitiator) {
+        if (!state.iceRestartTimer) {
+          state.iceRestartTimer = setTimeout(() => {
+            state.iceRestartTimer = null;
+            if (pc.signalingState !== 'closed' && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
+              try {
+                pc.restartIce();
+                void negotiateWithPeer(remoteUserId);
+              } catch {}
+            }
+          }, 4000);
+        }
+      } else if (iceState === 'failed' && isInitiator) {
+        try {
+          pc.restartIce();
+          void negotiateWithPeer(remoteUserId);
+        } catch {}
       }
     };
 
+    return state;
+  };
+
+  // Real-Time WebSocket connection for Team Voice/Video stage (with automatic reconnect on transient drops)
+  useEffect(() => {
+    let unmounted = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const closeAllPeers = () => {
+      peerStatesRef.current.forEach((st) => {
+        if (st.iceRestartTimer) clearTimeout(st.iceRestartTimer);
+        try {
+          st.pc.close();
+        } catch {}
+      });
+      peerStatesRef.current.clear();
+      pendingIceMapRef.current.clear();
+      remoteTrackMapRef.current.clear();
+      setRemoteStreams({});
+    };
+
+    const connectWs = () => {
+      if (unmounted) return;
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${proto}//${window.location.host}/ws/team-live`;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (unmounted) {
+          ws.close();
+          return;
+        }
+        ws.send(
+          JSON.stringify({
+            type: 'join-room',
+            teamId: team.teamId,
+            userId: currentUser.userId,
+            username: currentUser.username,
+            displayName: currentUser.displayName,
+            photoURL: currentUser.photoURL,
+            seatNumber: mySeatRef.current,
+            micMuted: micMutedRef.current,
+            cameraOn: cameraOnRef.current,
+          })
+        );
+      };
+
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(String(event.data));
+          if (msg.type === 'room-peers') {
+            const list = (msg.peers || []) as RemotePeerInfo[];
+            setPeersInRoom(list);
+            for (const peer of list) {
+              if (peer.userId === currentUser.userId) continue;
+              if (currentUser.userId < peer.userId) {
+                getOrCreatePeerState(peer.userId, true);
+                await negotiateWithPeer(peer.userId);
+              }
+            }
+          } else if (msg.type === 'peer-joined') {
+            if (Array.isArray(msg.peers)) setPeersInRoom(msg.peers);
+            const peer = msg.peer as RemotePeerInfo | undefined;
+            if (peer && peer.userId !== currentUser.userId && currentUser.userId < peer.userId) {
+              getOrCreatePeerState(peer.userId, true);
+              await negotiateWithPeer(peer.userId);
+            }
+          } else if (msg.type === 'media-state') {
+            if (Array.isArray(msg.peers)) setPeersInRoom(msg.peers);
+          } else if (msg.type === 'peer-left') {
+            if (Array.isArray(msg.peers)) setPeersInRoom(msg.peers);
+            const leftId = String(msg.userId || '');
+            const st = peerStatesRef.current.get(leftId);
+            if (st) {
+              if (st.iceRestartTimer) clearTimeout(st.iceRestartTimer);
+              st.pc.close();
+              peerStatesRef.current.delete(leftId);
+            }
+            pendingIceMapRef.current.delete(leftId);
+            remoteTrackMapRef.current.delete(leftId);
+            setRemoteStreams((prev) => {
+              const copy = { ...prev };
+              delete copy[leftId];
+              return copy;
+            });
+          } else if (msg.type === 'webrtc-offer') {
+            const fromId = String(msg.fromUserId || '');
+            if (!fromId || !msg.sdp) return;
+            const st = getOrCreatePeerState(fromId, false);
+            const { pc } = st;
+            const isPolite = currentUser.userId > fromId;
+            const readyForOffer =
+              !st.makingOffer &&
+              (pc.signalingState === 'stable' || st.isSettingRemoteAnswerPending);
+            const offerCollision = !readyForOffer;
+            st.ignoreOffer = !isPolite && offerCollision;
+            if (st.ignoreOffer) return;
+
+            if (offerCollision && pc.signalingState !== 'stable') {
+              await pc.setLocalDescription({ type: 'rollback' }).catch(() => {});
+            }
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+            // Bind our local tracks onto the transceivers created by the remote offer
+            await syncTracksToSinglePeer(pc, localStreamRef.current, mySeatRef.current !== null);
+            await flushPeerIce(fromId, pc);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  type: 'webrtc-answer',
+                  toUserId: fromId,
+                  sdp: { type: pc.localDescription?.type || answer.type, sdp: pc.localDescription?.sdp || answer.sdp },
+                })
+              );
+            }
+            if (st.pendingNegotiate && pc.signalingState === 'stable') {
+              st.pendingNegotiate = false;
+              void negotiateWithPeer(fromId);
+            }
+          } else if (msg.type === 'webrtc-answer') {
+            const fromId = String(msg.fromUserId || '');
+            const st = peerStatesRef.current.get(fromId);
+            if (st && msg.sdp && st.pc.signalingState === 'have-local-offer') {
+              st.isSettingRemoteAnswerPending = true;
+              try {
+                await st.pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+                await flushPeerIce(fromId, st.pc);
+              } finally {
+                st.isSettingRemoteAnswerPending = false;
+              }
+              if (st.pendingNegotiate) {
+                st.pendingNegotiate = false;
+                void negotiateWithPeer(fromId);
+              }
+            }
+          } else if (msg.type === 'webrtc-ice-candidate') {
+            const fromId = String(msg.fromUserId || '');
+            const st = peerStatesRef.current.get(fromId);
+            if (st && msg.candidate && st.pc.signalingState !== 'closed') {
+              if (st.pc.remoteDescription) {
+                await st.pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {});
+              } else {
+                const queue = pendingIceMapRef.current.get(fromId) || [];
+                queue.push(msg.candidate);
+                pendingIceMapRef.current.set(fromId, queue);
+              }
+            }
+          }
+        } catch {
+          // ignore transient packet error
+        }
+      };
+
+      ws.onclose = () => {
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
+        if (!unmounted) {
+          closeAllPeers();
+          reconnectTimer = setTimeout(connectWs, 1500);
+        }
+      };
+    };
+
+    connectWs();
+
     return () => {
+      unmounted = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       try {
-        if (ws.readyState === WebSocket.OPEN) {
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'leave-room' }));
         }
-        ws.close();
+        ws?.close();
       } catch {}
       wsRef.current = null;
-      pcsRef.current.forEach((pc) => pc.close());
-      pcsRef.current.clear();
-      pendingIceMapRef.current.clear();
+      closeAllPeers();
       stopLocalMedia();
     };
   }, [team.teamId, currentUser.userId]);
-
-  // Trigger renegotiation when mySeat changes so audio/video tracks propagate to peers
-  useEffect(() => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const timer = setTimeout(() => {
-      peersInRoom.forEach((peer) => {
-        if (peer.userId !== currentUser.userId) {
-          getOrCreatePeerConnection(peer.userId);
-        }
-      });
-      renegotiateAllPeers();
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [mySeat]);
 
   // Leave Room handler (vacates Seat 2..6 if occupied; Owner can leave or End Room)
   const handleLeaveStage = async () => {
@@ -1072,10 +1256,21 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
   }, [liveViewerIds, peersInRoom, currentUser.userId]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#0d0a1c] text-white flex flex-col">
-      {/* Hidden audio sinks strictly for seated speakers (everyone hears seated speakers 1..6 even if camera is OFF) */}
+    <div
+      onClick={audioBlocked ? () => setAudioUnlockTick((c) => c + 1) : undefined}
+      className="fixed inset-0 z-50 bg-[#0d0a1c] text-white flex flex-col"
+    >
+      {/* Accessible audio sinks strictly for seated speakers (everyone hears seated speakers 1..6 even if camera is OFF) */}
       {Object.entries(remoteStreams).map(([uid, stream]) =>
-        seatedUserIds.has(uid) ? <PeerAudioSink key={uid} stream={stream} /> : null
+        seatedUserIds.has(uid) ? (
+          <PeerAudioSink
+            key={uid}
+            stream={stream}
+            unlockTick={audioUnlockTick}
+            onAutoplayBlocked={handleAutoplayBlocked}
+            onAudioPlaying={handleAudioPlaying}
+          />
+        ) : null
       )}
 
       {/* Top Live Header */}
@@ -1131,6 +1326,17 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
 
       {/* Main Scrollable Stage + Live Comments */}
       <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4 max-w-2xl w-full mx-auto">
+        {audioBlocked && (
+          <button
+            type="button"
+            onClick={() => setAudioUnlockTick((c) => c + 1)}
+            className="w-full py-2.5 px-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-2 shadow-lg animate-bounce"
+          >
+            <Volume2 className="w-4 h-4 shrink-0" />
+            <span>Sagalee Live Dhaga’uuf Tuqaa / Tap to Hear Live Audio</span>
+          </button>
+        )}
+
         {mediaNotice && (
           <div className="px-4 py-2.5 rounded-2xl bg-amber-500/20 border border-amber-500/40 text-amber-100 text-xs text-center space-y-2">
             <div className="flex items-center justify-center gap-1.5 font-semibold">
@@ -1217,7 +1423,10 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
               : occupantId
               ? remoteStreams[occupantId] || null
               : null;
-            const hasVideoTrack = Boolean(seatStream && seatStream.getVideoTracks().length > 0);
+            const hasVideoTrack = Boolean(
+              seatStream &&
+                seatStream.getVideoTracks().some((t) => t.readyState === 'live')
+            );
             const showSeatVideo = Boolean(occupantId && seatCameraOn && seatStream && hasVideoTrack);
 
             const myPendingOnThisSeat = seatRequests.some(
@@ -1258,7 +1467,7 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
                     {/* STRICT PER-SEAT CAMERA VIDEO: renders ONLY inside this exact seat frame! */}
                     {showSeatVideo && seatStream ? (
                       <div className="absolute inset-0">
-                        <SeatVideoSlot stream={seatStream} muted={isMeOnSeat} />
+                        <SeatVideoSlot stream={seatStream} />
                       </div>
                     ) : (
                       <div className="relative flex flex-col items-center justify-center">

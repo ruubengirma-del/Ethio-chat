@@ -126,33 +126,57 @@ function hashOtpCode(email: string, code: string, salt: string): string {
   return crypto.createHash('sha256').update(`${email.toLowerCase()}:${code}:${salt}`).digest('hex');
 }
 
+function readConfigValue(key: string): string {
+  const direct = process.env[key];
+  if (direct && direct.trim()) return direct.trim();
+
+  const candidateFiles = [
+    `/etc/secrets/${key}`,
+    path.resolve(__dirname, key),
+  ];
+  for (const filePath of candidateFiles) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const content = fs.readFileSync(filePath, 'utf-8').trim();
+        if (content) return content;
+      }
+    } catch {
+      // ignore read failure
+    }
+  }
+  return '';
+}
+
 function getEmailConfigState(): {
   configured: boolean;
   provider: 'smtp' | 'gmail' | 'resend' | 'none';
 } {
-  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+  if (readConfigValue('SMTP_HOST') && readConfigValue('SMTP_USER') && readConfigValue('SMTP_PASS')) {
     return { configured: true, provider: 'smtp' };
   }
   if (
-    process.env.GMAIL_USER &&
-    (process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD || process.env.GMAIL_PASS)
+    readConfigValue('GMAIL_USER') &&
+    (readConfigValue('GMAIL_APP_PASSWORD') || readConfigValue('GMAIL_PASSWORD') || readConfigValue('GMAIL_PASS'))
   ) {
     return { configured: true, provider: 'gmail' };
   }
-  if (process.env.RESEND_API_KEY) {
+  if (readConfigValue('RESEND_API_KEY')) {
     return { configured: true, provider: 'resend' };
   }
   return { configured: false, provider: 'none' };
 }
 
 function getEmailTransport(portOverride?: number) {
-  const host = (process.env.SMTP_HOST || (process.env.GMAIL_USER ? 'smtp.gmail.com' : '')).trim();
-  const user = (process.env.SMTP_USER || process.env.GMAIL_USER || '').trim();
+  const gmailUser = readConfigValue('GMAIL_USER');
+  const smtpHost = readConfigValue('SMTP_HOST');
+  const host = smtpHost || (gmailUser ? 'smtp.gmail.com' : '');
+  const user = readConfigValue('SMTP_USER') || gmailUser;
   const gmailPass =
-    process.env.GMAIL_APP_PASSWORD || process.env.GMAIL_PASSWORD || process.env.GMAIL_PASS || '';
-  const rawPass = process.env.SMTP_PASS || gmailPass;
-  const pass = !process.env.SMTP_PASS && gmailPass ? rawPass.replace(/\s+/g, '') : rawPass;
-  const port = portOverride ?? Number(process.env.SMTP_PORT || 587);
+    readConfigValue('GMAIL_APP_PASSWORD') || readConfigValue('GMAIL_PASSWORD') || readConfigValue('GMAIL_PASS');
+  const smtpPass = readConfigValue('SMTP_PASS');
+  const rawPass = smtpPass || gmailPass;
+  const pass = !smtpPass && gmailPass ? rawPass.replace(/\s+/g, '') : rawPass;
+  const port = portOverride ?? Number(readConfigValue('SMTP_PORT') || 587);
 
   if (host && user && pass) {
     return nodemailer.createTransport({
@@ -184,15 +208,14 @@ async function sendOutboundEmail(params: {
   html: string;
   attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
 }): Promise<{ sent: boolean; provider?: string; reason?: string }> {
-  const primaryPort = Number(process.env.SMTP_PORT || 587);
+  const primaryPort = Number(readConfigValue('SMTP_PORT') || 587);
   const transporter = getEmailTransport(primaryPort);
-  const smtpSender = (process.env.SMTP_USER || process.env.GMAIL_USER || '').trim();
-  const configuredFrom = (
-    process.env.SMTP_FROM ||
-    process.env.EMAIL_FROM ||
-    process.env.RESEND_FROM ||
-    ''
-  ).trim();
+  const gmailUser = readConfigValue('GMAIL_USER');
+  const smtpSender = readConfigValue('SMTP_USER') || gmailUser;
+  const configuredFrom =
+    readConfigValue('SMTP_FROM') ||
+    readConfigValue('EMAIL_FROM') ||
+    readConfigValue('RESEND_FROM');
   const fromAddress =
     configuredFrom ||
     (smtpSender ? `"Ethio Chat" <${smtpSender}>` : 'Ethio Chat <no-reply@ethiochat.app>');
@@ -207,7 +230,7 @@ async function sendOutboundEmail(params: {
         html: params.html,
         attachments: params.attachments,
       });
-      return { sent: true, provider: process.env.GMAIL_USER ? 'gmail' : 'smtp' };
+      return { sent: true, provider: gmailUser ? 'gmail' : 'smtp' };
     } catch (err) {
       const code = String((err as any)?.code || '');
       const fallbackPort = primaryPort === 465 ? 587 : 465;
@@ -223,7 +246,7 @@ async function sendOutboundEmail(params: {
               html: params.html,
               attachments: params.attachments,
             });
-            return { sent: true, provider: process.env.GMAIL_USER ? 'gmail' : 'smtp' };
+            return { sent: true, provider: gmailUser ? 'gmail' : 'smtp' };
           } catch (fallbackErr) {
             console.error('SMTP fallback port send failed:', fallbackErr);
             return {
@@ -238,7 +261,7 @@ async function sendOutboundEmail(params: {
     }
   }
 
-  const resendKey = process.env.RESEND_API_KEY;
+  const resendKey = readConfigValue('RESEND_API_KEY');
   if (resendKey) {
     try {
       const resp = await fetch('https://api.resend.com/emails', {
@@ -2666,6 +2689,47 @@ async function runBackgroundAdminLifecycleSweep() {
 async function startServer() {
   const httpServer = http.createServer(app);
 
+  app.get('/api/health', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).json({ ok: true, app: 'Ethio Chat', ts: Date.now() });
+  });
+
+  app.get('/api/rtc-config', async (_req, res) => {
+    const iceServers: Array<{ urls: string | string[]; username?: string; credential?: string }> = [];
+    const customUrls = readConfigValue('TURN_URLS');
+    const customUser = readConfigValue('TURN_USERNAME');
+    const customCred = readConfigValue('TURN_CREDENTIAL');
+    if (customUrls) {
+      const urls = customUrls.split(',').map((u) => u.trim()).filter(Boolean);
+      if (urls.length > 0) {
+        iceServers.push({
+          urls,
+          ...(customUser ? { username: customUser } : {}),
+          ...(customCred ? { credential: customCred } : {}),
+        });
+      }
+    }
+
+    const meteredKey = readConfigValue('METERED_API_KEY');
+    const meteredDomain = readConfigValue('METERED_DOMAIN');
+    if (meteredKey && meteredDomain) {
+      try {
+        const resp = await fetch(`https://${meteredDomain}/api/v1/turn/credentials?apiKey=${encodeURIComponent(meteredKey)}`);
+        if (resp.ok) {
+          const creds = await resp.json();
+          if (Array.isArray(creds)) {
+            iceServers.push(...creds);
+          }
+        }
+      } catch {
+        // fallback to client built-in TURN servers
+      }
+    }
+
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.status(200).json({ iceServers });
+  });
+
   app.get('/.well-known/assetlinks.json', (_req, res) => {
     const candidates = [
       path.resolve(__dirname, 'dist', '.well-known', 'assetlinks.json'),
@@ -2715,9 +2779,17 @@ async function startServer() {
         runBackgroundAdminLifecycleSweep().catch(() => {});
       }, 5 * 60 * 1000);
     }
+
+    const externalUrl = process.env.RENDER_EXTERNAL_URL?.trim();
+    if (externalUrl) {
+      const healthUrl = `${externalUrl.replace(/\/$/, '')}/api/health`;
+      setInterval(() => {
+        fetch(healthUrl).catch(() => {});
+      }, 10 * 60 * 1000);
+    }
   });
 
-  // Real-Time WebRTC Signaling WebSocket for Team 10-Seat Live Voice/Video Stage
+  // Real-Time WebRTC Signaling WebSocket for Team Live Voice/Video Stage
   interface LivePeerInfo {
     ws: WebSocket;
     teamId: string;
@@ -2759,11 +2831,39 @@ async function startServer() {
     }));
   };
 
+  // Keep mobile & reverse-proxy WebSockets alive across idle periods
+  const wsKeepAliveInterval = setInterval(() => {
+    wss.clients.forEach((client) => {
+      const tracked = client as WebSocket & { isAlive?: boolean };
+      if (tracked.isAlive === false) {
+        try {
+          client.terminate();
+        } catch {}
+        return;
+      }
+      tracked.isAlive = false;
+      try {
+        client.ping();
+      } catch {}
+    });
+  }, 25000);
+
+  wss.on('close', () => {
+    clearInterval(wsKeepAliveInterval);
+  });
+
   wss.on('connection', (ws: WebSocket) => {
+    const trackedWs = ws as WebSocket & { isAlive?: boolean };
+    trackedWs.isAlive = true;
+    ws.on('pong', () => {
+      trackedWs.isAlive = true;
+    });
+
     let joinedTeamId: string | null = null;
     let joinedUserId: string | null = null;
 
     ws.on('message', (data) => {
+      trackedWs.isAlive = true;
       try {
         const msg = JSON.parse(String(data)) as Record<string, any>;
         const type = String(msg.type || '');
@@ -2793,6 +2893,12 @@ async function startServer() {
             micMuted: Boolean(msg.micMuted),
             cameraOn: Boolean(msg.cameraOn),
           };
+          const existingPeer = room.get(userId);
+          if (existingPeer && existingPeer.ws !== ws) {
+            try {
+              existingPeer.ws.close();
+            } catch {}
+          }
           room.set(userId, peerInfo);
 
           // Send full current peer list back to joining client

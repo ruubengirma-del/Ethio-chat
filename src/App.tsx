@@ -660,6 +660,23 @@ const MainAppContent: React.FC = () => {
     }
   };
 
+  if (loading) {
+    return (
+      <div className="min-h-[100dvh] w-full bg-[#0d0b18] text-white flex flex-col items-center justify-center gap-4 p-6">
+        <img
+          src="/assets/aistudio/20261111_152710_57efcc53.png"
+          alt="Ethio Chat"
+          className="w-20 h-20 rounded-3xl shadow-2xl shadow-[#7560DF]/35 object-cover"
+        />
+        <div className="text-center space-y-1">
+          <h1 className="text-xl font-black tracking-tight">Ethio Chat</h1>
+          <p className="text-xs text-[#B09EFC]/80">Banaa jira...</p>
+        </div>
+        <div className="w-7 h-7 rounded-full border-[3px] border-[#7560DF]/30 border-t-[#7560DF] animate-spin" />
+      </div>
+    );
+  }
+
   // Admin accounts open Payment Management by default, with Back button to main Settings page
   if (currentUser && isAdmin && !isOwner && !isAddingAccount && !adminDashboardDismissed) {
     return (
