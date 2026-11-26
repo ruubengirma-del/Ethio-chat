@@ -396,10 +396,10 @@ export const MediaLightboxModal: React.FC<MediaLightboxModalProps> = ({
             </div>
             <div className="space-y-1">
               <p className="text-sm font-bold text-white">
-                Viidiyoon kun amma banamuu hin dandeenye
+                This video cannot open right now
               </p>
               <p className="text-xs text-slate-300 leading-relaxed">
-                Yoo networkiin citee jiraate irra deebi&apos;ii yaali.
+                If your connection dropped, tap Retry to load it again.
               </p>
             </div>
             <button
@@ -411,7 +411,7 @@ export const MediaLightboxModal: React.FC<MediaLightboxModalProps> = ({
               className="px-4 py-2 rounded-full bg-[#7560DF] hover:bg-[#624ec7] text-white text-xs font-bold flex items-center gap-1.5 shadow-lg transition-colors"
             >
               <RefreshCw className="w-3.5 h-3.5" />
-              <span>Irra Deebi&apos;i (Retry)</span>
+              <span>Retry</span>
             </button>
           </div>
         ) : (

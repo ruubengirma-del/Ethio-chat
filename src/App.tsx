@@ -41,13 +41,16 @@ import { WarningAppealModal } from './components/profile/WarningAppealModal';
 import { ModerationInboxModal } from './components/settings/ModerationInboxModal';
 import { SubscriptionModal } from './components/settings/SubscriptionModal';
 import { AdminPaymentDashboard } from './components/settings/AdminPaymentDashboard';
-import { ADMIN_MODERATION_EMAIL, getFontStack, isAudienceVisibleToUser } from './lib/socialHelpers';
+import { ADMIN_MODERATION_EMAIL, getFontStack, isAudienceVisibleToUser, toNotificationMillis } from './lib/socialHelpers';
 import { readPendingEmailChangeFlow } from './lib/otpFlowPersistence';
 import {
   cleanupPushListeners,
+  dispatchPushNotification,
   ForegroundPushEventDetail,
   registerAndSyncPushToken,
+  showSystemNotification,
 } from './lib/pushNotifications';
+import { unlockCallAudio } from './lib/callSounds';
 import { db } from './lib/firebase';
 import {
   collection,
@@ -57,10 +60,11 @@ import {
   onSnapshot,
   doc,
   setDoc,
+  updateDoc,
   getDoc
 } from 'firebase/firestore';
 import { CallSession, ChatParticipant, ChatRoom, Post, SocialGroup, Team } from './types';
-import { AlertTriangle, ShieldAlert, Mail, LogOut, Bell, X } from 'lucide-react';
+import { AlertTriangle, ShieldAlert, Mail, LogOut, Bell, BellRing, X } from 'lucide-react';
 
 type ActiveChatState =
   | { type: 'direct'; chatId: string; recipient: ChatParticipant }
@@ -79,6 +83,8 @@ const MainAppContent: React.FC = () => {
     followingIds,
     blockedIds,
     incomingFollowRecords,
+    allUsers,
+    notifications,
     isOwner,
     isAdmin,
   } = useAuth();
@@ -89,6 +95,17 @@ const MainAppContent: React.FC = () => {
   const [focusedPostId, setFocusedPostId] = useState<string | null>(null);
   const [focusedCommentId, setFocusedCommentId] = useState<string | null>(null);
   const [foregroundPushToast, setForegroundPushToast] = useState<ForegroundPushEventDetail | null>(null);
+  const [showNotifPrompt, setShowNotifPrompt] = useState<boolean>(() => {
+    try {
+      return (
+        typeof Notification !== 'undefined' &&
+        Notification.permission === 'default' &&
+        localStorage.getItem('ethio_notif_prompt_dismissed') !== 'true'
+      );
+    } catch {
+      return false;
+    }
+  });
 
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [isCreateGroupModalOpen, setIsCreateGroupModalOpen] = useState(false);
@@ -133,6 +150,23 @@ const MainAppContent: React.FC = () => {
   const [lastAllUsersSeenAt, setLastAllUsersSeenAt] = useState<string>('1970-01-01T00:00:00.000Z');
   const visitedAllUsersRef = React.useRef<boolean>(false);
   const restoredOtpTabUidRef = React.useRef<string | null>(null);
+  const activeChatRef = React.useRef<ActiveChatState>(null);
+  const notifiedCallIdsRef = React.useRef<Set<string>>(new Set());
+  const seenChatMessageTimesRef = React.useRef<Map<string, string>>(new Map());
+  const chatsInitializedRef = React.useRef<boolean>(false);
+  const notifiedAppNotifIdsRef = React.useRef<Set<string>>(new Set());
+  const notifBaselineMsRef = React.useRef<number>(Date.now());
+
+  useEffect(() => {
+    activeChatRef.current = activeChat;
+  }, [activeChat]);
+
+  useEffect(() => {
+    chatsInitializedRef.current = false;
+    seenChatMessageTimesRef.current.clear();
+    notifiedAppNotifIdsRef.current.clear();
+    notifBaselineMsRef.current = Date.now();
+  }, [currentUser?.uid]);
 
   useEffect(() => {
     if (!currentUser?.uid || !userProfile?.email) return;
@@ -172,12 +206,14 @@ const MainAppContent: React.FC = () => {
     }
   }, [userProfile?.userId, userProfile?.appLockEnabled, userProfile?.appLockPin, userProfile?.fingerprintLockEnabled]);
 
-  // Support deep links like ?profile=<uid> or ?post=<postId>&comment=<commentId>
+  // Support deep links like ?profile=<uid>, ?post=<postId>&comment=<commentId>, ?chat=<chatId>, or ?call=<callId>
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const sharedProfileId = params.get('profile');
     const sharedPostId = params.get('post');
     const sharedCommentId = params.get('comment');
+    const sharedChatId = params.get('chat');
+    const sharedCallId = params.get('call');
 
     if (sharedProfileId) {
       setViewingProfileUserId(sharedProfileId);
@@ -186,10 +222,14 @@ const MainAppContent: React.FC = () => {
       setFocusedPostId(sharedPostId);
       setFocusedCommentId(sharedCommentId || null);
       setActiveTab('home');
+    } else if (sharedCallId) {
+      void handleNavigateToCallById(sharedCallId);
+    } else if (sharedChatId) {
+      void handleNavigateToChatById(sharedChatId);
     }
   }, []);
 
-  // Register FCM push token & listen for foreground/background-click post navigation
+  // Register FCM push token & listen for foreground/background-click deep navigation
   useEffect(() => {
     if (!currentUser) {
       cleanupPushListeners();
@@ -206,19 +246,44 @@ const MainAppContent: React.FC = () => {
       toastTimer = setTimeout(() => setForegroundPushToast(null), 6500);
     };
 
-    const onSwMessage = (event: MessageEvent) => {
-      const data = event.data as { type?: string; postId?: string; commentId?: string } | undefined;
-      if (data?.type === 'OPEN_MENTION_POST' && data.postId) {
+    const handleNotificationNav = (data?: {
+      type?: string;
+      postId?: string;
+      commentId?: string;
+      chatId?: string;
+      callId?: string;
+    }) => {
+      if (!data) return;
+      if (data.postId) {
         setActiveChat(null);
         setActiveGroup(null);
         setViewingProfileUserId(null);
         setFocusedPostId(data.postId);
         setFocusedCommentId(data.commentId || null);
         setActiveTab('home');
+      } else if (data.callId) {
+        void handleNavigateToCallById(data.callId);
+      } else if (data.chatId) {
+        void handleNavigateToChatById(data.chatId);
       }
     };
 
+    const onSwMessage = (event: MessageEvent) => {
+      const data = event.data as
+        | { type?: string; postId?: string; commentId?: string; chatId?: string; callId?: string }
+        | undefined;
+      if (data?.type === 'OPEN_MENTION_POST' || data?.type === 'OPEN_ETHIO_NOTIFICATION') {
+        handleNotificationNav(data);
+      }
+    };
+
+    const onWindowNotifUrl = (evt: Event) => {
+      const detail = (evt as CustomEvent<{ postId?: string; commentId?: string; chatId?: string; callId?: string }>).detail;
+      handleNotificationNav(detail);
+    };
+
     window.addEventListener('ethio-foreground-push', onForegroundPush);
+    window.addEventListener('ethio-open-notification-url', onWindowNotifUrl);
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', onSwMessage);
     }
@@ -226,13 +291,14 @@ const MainAppContent: React.FC = () => {
     return () => {
       if (toastTimer) clearTimeout(toastTimer);
       window.removeEventListener('ethio-foreground-push', onForegroundPush);
+      window.removeEventListener('ethio-open-notification-url', onWindowNotifUrl);
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.removeEventListener('message', onSwMessage);
       }
     };
   }, [currentUser?.uid]);
 
-  // Listen globally for incoming ringing audio/video calls for the logged-in user
+  // Listen globally for incoming ringing audio/video calls (filter out stale >2m ringing calls & notify OS)
   useEffect(() => {
     if (!currentUser) return;
     const q = query(
@@ -245,7 +311,37 @@ const MainAppContent: React.FC = () => {
       q,
       (snapshot) => {
         if (snapshot.empty) return;
-        const incoming = snapshot.docs[0].data() as CallSession;
+        const now = Date.now();
+        const freshCalls: CallSession[] = [];
+        snapshot.docs.forEach((d) => {
+          const item = d.data() as CallSession;
+          const createdMs = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+          if (createdMs > 0 && now - createdMs > 120000) {
+            updateDoc(doc(db, 'calls', item.callId), { status: 'ended' }).catch(() => {});
+          } else {
+            freshCalls.push(item);
+          }
+        });
+        if (freshCalls.length === 0) return;
+
+        freshCalls.sort(
+          (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+        );
+        const incoming = freshCalls[0];
+
+        if (!notifiedCallIdsRef.current.has(incoming.callId)) {
+          notifiedCallIdsRef.current.add(incoming.callId);
+          void showSystemNotification({
+            title: incoming.callType === 'video' ? 'Incoming Video Call' : 'Incoming Audio Call',
+            body: `${incoming.callerDisplayName} (@${incoming.callerUsername}) is calling you`,
+            tag: `call_${incoming.callId}`,
+            url: `/?call=${encodeURIComponent(incoming.callId)}`,
+            requireInteraction: true,
+            vibrate: [350, 200, 350, 200, 350],
+            data: { callId: incoming.callId },
+          });
+        }
+
         setActiveCall((prev) => {
           if (prev && prev.callId === incoming.callId) return prev;
           return incoming;
@@ -256,6 +352,57 @@ const MainAppContent: React.FC = () => {
 
     return () => unsub();
   }, [currentUser]);
+
+  // Trigger OS notifications outside the app for newly received Comments, Replies, Mentions & Likes
+  useEffect(() => {
+    if (!currentUser || !notifications.length) return;
+    const isOutsideOrUnfocused = typeof document !== 'undefined' && (document.hidden || !document.hasFocus());
+
+    for (const n of notifications) {
+      if (n.read) continue;
+      if (notifiedAppNotifIdsRef.current.has(n.notificationId)) continue;
+      const ms = toNotificationMillis(n.createdAt);
+      if (ms < notifBaselineMsRef.current - 2500) continue;
+
+      notifiedAppNotifIdsRef.current.add(n.notificationId);
+      if (!isOutsideOrUnfocused) continue;
+
+      const actorName = n.actorDisplayName || `@${n.actorUsername || n.fromUsername || 'member'}`;
+      let title = 'Ethio Chat';
+      let body = n.text || 'New notification';
+      if (n.type === 'comment') {
+        title = `${actorName} commented`;
+        body = n.text ? `"${n.text.slice(0, 120)}"` : 'Commented on your post';
+      } else if (n.type === 'mention') {
+        title = `${actorName} mentioned you`;
+        body = n.text || 'Mentioned you on Ethio Chat';
+      } else if (n.type === 'like') {
+        title = `${actorName} liked`;
+        body = n.text || 'Liked your post';
+      } else if (n.type === 'follow' || n.type === 'follow_back') {
+        title = `${actorName}`;
+        body = n.type === 'follow_back' ? 'Followed you back' : 'Started following you';
+      }
+
+      const targetUrl = n.postId
+        ? `/?post=${encodeURIComponent(n.postId)}${n.commentId ? `&comment=${encodeURIComponent(n.commentId)}` : ''}`
+        : n.chatId
+        ? `/?chat=${encodeURIComponent(n.chatId)}`
+        : '/';
+
+      void showSystemNotification({
+        title,
+        body,
+        tag: `notif_${n.notificationId}`,
+        url: targetUrl,
+        data: {
+          ...(n.postId ? { postId: n.postId } : {}),
+          ...(n.commentId ? { commentId: n.commentId } : {}),
+          ...(n.chatId ? { chatId: n.chatId } : {}),
+        },
+      });
+    }
+  }, [notifications, currentUser]);
 
   // Load persisted seen timestamps for Home new-posts badge, Video new-videos badge, and All Users follow badge
   useEffect(() => {
@@ -311,7 +458,7 @@ const MainAppContent: React.FC = () => {
     }
   }, [currentUser]);
 
-  // Count exact number of unique people who sent unread direct messages
+  // Count exact number of unique people who sent unread direct messages & notify OS on new messages
   useEffect(() => {
     if (!currentUser) {
       setUnreadChatPeopleCount(0);
@@ -325,8 +472,48 @@ const MainAppContent: React.FC = () => {
       q,
       (snapshot) => {
         const unreadSenders = new Set<string>();
+        const isFirstLoad = !chatsInitializedRef.current;
+
         snapshot.forEach((d) => {
           const room = d.data() as ChatRoom;
+          const prevSeenTime = seenChatMessageTimesRef.current.get(room.chatId);
+          const nextTime = room.lastMessageTime || '';
+
+          if (!isFirstLoad && nextTime && (!prevSeenTime || nextTime > prevSeenTime)) {
+            if (
+              room.lastSenderId &&
+              room.lastSenderId !== currentUser.uid &&
+              !blockedIds.has(room.lastSenderId)
+            ) {
+              const appHidden = typeof document !== 'undefined' && (document.hidden || !document.hasFocus());
+              const viewingSameChat =
+                activeChatRef.current &&
+                'chatId' in activeChatRef.current &&
+                activeChatRef.current.chatId === room.chatId;
+
+              if (appHidden || !viewingSameChat) {
+                const senderUser = allUsers.find((u) => u.userId === room.lastSenderId);
+                const senderParticipant = room.participants?.[room.lastSenderId];
+                const senderName =
+                  senderUser?.displayName ||
+                  senderParticipant?.displayName ||
+                  (senderUser?.username ? `@${senderUser.username}` : 'New message');
+
+                void showSystemNotification({
+                  title: room.isGroup ? `${room.groupName || 'Group'} · ${senderName}` : senderName,
+                  body: room.lastMessage || 'Sent you a message',
+                  tag: `chat_${room.chatId}`,
+                  url: `/?chat=${encodeURIComponent(room.chatId)}`,
+                  data: { chatId: room.chatId },
+                });
+              }
+            }
+          }
+
+          if (nextTime) {
+            seenChatMessageTimesRef.current.set(room.chatId, nextTime);
+          }
+
           if (room.isGroup) return;
           const unread = room.unreadCounts?.[currentUser.uid] || 0;
           if (unread > 0) {
@@ -336,12 +523,14 @@ const MainAppContent: React.FC = () => {
             }
           }
         });
+
+        chatsInitializedRef.current = true;
         setUnreadChatPeopleCount(unreadSenders.size);
       },
       () => {}
     );
     return () => unsub();
-  }, [currentUser, blockedIds]);
+  }, [currentUser, blockedIds, allUsers]);
 
   // Listen to posts to compute exact count of unique followed/added users who posted new content
   useEffect(() => {
@@ -429,6 +618,7 @@ const MainAppContent: React.FC = () => {
     chatId: string
   ) => {
     if (!currentUser || !userProfile) return;
+    unlockCallAudio();
     // Trigger browser media permission prompt synchronously inside the user click gesture
     primeMediaStream('call', {
       wantAudio: true,
@@ -455,6 +645,15 @@ const MainAppContent: React.FC = () => {
     };
     await setDoc(doc(db, 'calls', callId), session);
     setActiveCall(session);
+
+    void dispatchPushNotification({
+      type: 'call',
+      toUserId: target.userId,
+      fromUsername: userProfile.username,
+      title: callType === 'video' ? 'Incoming Video Call' : 'Incoming Audio Call',
+      text: `${userProfile.displayName} (@${userProfile.username}) is calling you`,
+      callId,
+    });
   };
 
   const handleStartChatWithUser = (recipient: ChatParticipant) => {
@@ -476,6 +675,22 @@ const MainAppContent: React.FC = () => {
     setActiveChat({ type: 'team', teamId: team.teamId, team });
   };
 
+  const handleNavigateToCallById = async (callId: string) => {
+    try {
+      const snap = await getDoc(doc(db, 'calls', callId));
+      if (snap.exists()) {
+        const callData = snap.data() as CallSession;
+        if (callData.status === 'ringing' || callData.status === 'active') {
+          setActiveCall(callData);
+          return;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    setActiveTab('chats');
+  };
+
   const handleNavigateToChatById = async (chatId: string) => {
     try {
       const snap = await getDoc(doc(db, 'chats', chatId));
@@ -484,6 +699,22 @@ const MainAppContent: React.FC = () => {
         if (room.isGroup) {
           setActiveTab('chats');
           setActiveChat({ type: 'group', chatId: room.chatId, groupRoom: room });
+          return;
+        }
+        const otherId = room.participantIds?.find((id) => id !== currentUser?.uid);
+        if (otherId) {
+          const matchedUser = allUsers.find((u) => u.userId === otherId);
+          const meta = room.participants?.[otherId];
+          const recipient: ChatParticipant = {
+            userId: otherId,
+            username: matchedUser?.username || meta?.username || 'member',
+            displayName: matchedUser?.displayName || meta?.displayName || 'Ethio Chat User',
+            ...(matchedUser?.photoURL || meta?.photoURL
+              ? { photoURL: matchedUser?.photoURL || meta?.photoURL }
+              : {}),
+          };
+          setActiveTab('chats');
+          setActiveChat({ type: 'direct', chatId: room.chatId, recipient });
           return;
         }
       }
@@ -670,7 +901,7 @@ const MainAppContent: React.FC = () => {
         />
         <div className="text-center space-y-1">
           <h1 className="text-xl font-black tracking-tight">Ethio Chat</h1>
-          <p className="text-xs text-[#B09EFC]/80">Banaa jira...</p>
+          <p className="text-xs text-[#B09EFC]/80">Loading...</p>
         </div>
         <div className="w-7 h-7 rounded-full border-[3px] border-[#7560DF]/30 border-t-[#7560DF] animate-spin" />
       </div>
@@ -713,10 +944,58 @@ const MainAppContent: React.FC = () => {
           >
             <AlertTriangle className="w-4 h-4 shrink-0" />
             <span>
-              Warning · Account kee irratti report {userProfile.reportsCount || 250}+ jira — Tuqii
-              falmadhu
+              Warning · Your account has {userProfile.reportsCount || 250}+ reports — Tap to appeal
             </span>
           </button>
+        )}
+
+        {/* 1-Tap Prompt to Enable Outside-App OS Notifications for Calls, Messages & Comments */}
+        {currentUser && showNotifPrompt && (
+          <div className="px-4 pt-2.5">
+            <div className="rounded-2xl bg-[#7560DF]/12 dark:bg-[#7560DF]/20 border border-[#7560DF]/30 px-3.5 py-2.5 flex items-center justify-between gap-2.5">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-xl bg-[#7560DF] text-white flex items-center justify-center shrink-0">
+                  <BellRing className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-extrabold text-slate-900 dark:text-white truncate">
+                    Turn on Call & Message Alerts
+                  </p>
+                  <p className="text-[11px] text-slate-600 dark:text-slate-300 truncate">
+                    Get notified outside the app for calls, chats & comments
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    unlockCallAudio();
+                    await registerAndSyncPushToken(currentUser.uid, { requestPermission: true });
+                    setShowNotifPrompt(
+                      typeof Notification !== 'undefined' && Notification.permission === 'default'
+                    );
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-[#7560DF] hover:bg-[#624ec7] text-white text-xs font-bold shadow-sm"
+                >
+                  Allow
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      localStorage.setItem('ethio_notif_prompt_dismissed', 'true');
+                    } catch {}
+                    setShowNotifPrompt(false);
+                  }}
+                  className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                  aria-label="Dismiss notification prompt"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Foreground FCM Push Notification Toast */}
@@ -728,9 +1007,12 @@ const MainAppContent: React.FC = () => {
                 onClick={() => {
                   const pId = foregroundPushToast.postId;
                   const cId = foregroundPushToast.commentId;
+                  const chId = foregroundPushToast.chatId;
                   setForegroundPushToast(null);
                   if (pId) {
                     handleNavigateToPost(pId, cId);
+                  } else if (chId) {
+                    void handleNavigateToChatById(chId);
                   } else {
                     setIsNotificationsOpen(true);
                   }
@@ -997,11 +1279,11 @@ const MainAppContent: React.FC = () => {
             </div>
             <div className="space-y-1.5">
               <h2 className="font-extrabold text-xl text-slate-900 dark:text-white">
-                Account kee cufameera
+                Your account has been suspended
               </h2>
               <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                Account kee irratti namoonni adda addaa {userProfile.reportsCount || 2500}+ ol
-                report waan godhaniif ofiin cufameera.
+                Your account was automatically suspended after receiving{' '}
+                {userProfile.reportsCount || 2500}+ unique reports.
               </p>
             </div>
             <div className="space-y-2 pt-2">

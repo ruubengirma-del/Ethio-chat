@@ -17,37 +17,57 @@ if (!firebase.apps.length) {
 
 const messaging = firebase.messaging();
 
-function buildPostTargetUrl(data) {
+function buildTargetUrl(data) {
+  if (data && data.url) return String(data.url);
+  const callId = data && data.callId ? String(data.callId) : '';
+  if (callId) return '/?call=' + encodeURIComponent(callId);
   const postId = data && data.postId ? String(data.postId) : '';
   const commentId = data && data.commentId ? String(data.commentId) : '';
-  if (!postId) return '/';
-  const params = new URLSearchParams();
-  params.set('post', postId);
-  if (commentId) params.set('comment', commentId);
-  return '/?' + params.toString();
+  if (postId) {
+    const params = new URLSearchParams();
+    params.set('post', postId);
+    if (commentId) params.set('comment', commentId);
+    return '/?' + params.toString();
+  }
+  const chatId = data && data.chatId ? String(data.chatId) : '';
+  if (chatId) return '/?chat=' + encodeURIComponent(chatId);
+  return '/';
 }
 
 messaging.onBackgroundMessage((payload) => {
   const data = (payload && payload.data) || {};
   const notif = (payload && payload.notification) || {};
 
-  const title = notif.title || 'Ethio Chat';
+  const title = notif.title || data.title || 'Ethio Chat';
   const body =
     notif.body ||
     data.body ||
-    (data.fromUsername ? '@' + data.fromUsername + ' si @mention godhe' : 'New notification');
+    (data.fromUsername ? '@' + data.fromUsername + ' mentioned you' : 'New notification');
 
+  const targetUrl = buildTargetUrl(data);
   const options = {
     body,
     icon: '/assets/aistudio/20261111_152710_57efcc53.png',
     badge: '/assets/aistudio/20261111_152710_57efcc53.png',
+    requireInteraction: data.type === 'call',
+    vibrate: data.type === 'call' ? [300, 150, 300] : undefined,
     data: {
       postId: data.postId || '',
       commentId: data.commentId || '',
+      chatId: data.chatId || '',
+      callId: data.callId || '',
       notificationId: data.notificationId || '',
-      url: data.url || buildPostTargetUrl(data),
+      url: targetUrl,
     },
-    tag: data.commentId ? 'mention_' + data.commentId : data.postId ? 'post_' + data.postId : 'ethio_notif',
+    tag: data.callId
+      ? 'call_' + data.callId
+      : data.commentId
+      ? 'comment_' + data.commentId
+      : data.postId
+      ? 'post_' + data.postId
+      : data.chatId
+      ? 'chat_' + data.chatId
+      : 'ethio_notif',
   };
 
   return self.registration.showNotification(title, options);
@@ -60,7 +80,9 @@ self.addEventListener('notificationclick', (event) => {
   const fcmData = rawData.FCM_MSG && rawData.FCM_MSG.data ? rawData.FCM_MSG.data : {};
   const postId = String(rawData.postId || fcmData.postId || '');
   const commentId = String(rawData.commentId || fcmData.commentId || '');
-  const targetPath = rawData.url || fcmData.url || buildPostTargetUrl({ postId, commentId });
+  const chatId = String(rawData.chatId || fcmData.chatId || '');
+  const callId = String(rawData.callId || fcmData.callId || '');
+  const targetPath = rawData.url || fcmData.url || buildTargetUrl({ postId, commentId, chatId, callId });
   const targetUrl = new URL(targetPath, self.location.origin).href;
 
   event.waitUntil(
@@ -69,9 +91,12 @@ self.addEventListener('notificationclick', (event) => {
         if ('focus' in client) {
           client.focus();
           client.postMessage({
-            type: 'OPEN_MENTION_POST',
+            type: 'OPEN_ETHIO_NOTIFICATION',
+            url: targetPath,
             postId,
             commentId,
+            chatId,
+            callId,
           });
           return;
         }

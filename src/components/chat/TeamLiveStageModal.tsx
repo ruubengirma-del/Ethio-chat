@@ -53,6 +53,7 @@ import {
   consumePrimedStream,
 } from '../../lib/mediaPermissions';
 import { DEFAULT_RTC_CONFIG, getRtcConfiguration } from '../../lib/rtcConfig';
+import { WsMediaRelay } from '../../lib/wsMediaRelay';
 
 interface TeamLiveStageModalProps {
   team: Team;
@@ -83,25 +84,52 @@ interface PeerSignalState {
 
 const SEAT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
-// Strictly bounded single seat video player — audio is played via PeerAudioSink to avoid duplicate echo & autoplay blocks
-const SeatVideoSlot: React.FC<{ stream: MediaStream }> = ({ stream }) => {
+// Strictly bounded single seat video player — supports native WebRTC stream + WebSocket video frame fallback
+const SeatVideoSlot: React.FC<{
+  stream?: MediaStream | null;
+  relayFrame?: string | null;
+  alt?: string;
+}> = ({ stream, relayFrame, alt }) => {
   const ref = useRef<HTMLVideoElement | null>(null);
+  const [videoDecoded, setVideoDecoded] = useState(false);
+
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
-    const videoTracks = stream.getVideoTracks();
-    el.srcObject = videoTracks.length > 0 ? new MediaStream(videoTracks) : stream;
+    if (!el || !stream) {
+      setVideoDecoded(false);
+      return;
+    }
+    const videoTracks = stream.getVideoTracks().filter((t) => t.readyState === 'live');
+    if (videoTracks.length === 0) {
+      el.srcObject = null;
+      setVideoDecoded(false);
+      return;
+    }
+    el.srcObject = new MediaStream(videoTracks);
     el.play().catch(() => {});
   }, [stream]);
 
+  const showNativeVideo = Boolean(stream && videoDecoded);
+
   return (
-    <video
-      ref={ref}
-      autoPlay
-      playsInline
-      muted
-      className="w-full h-full object-cover"
-    />
+    <div className="relative w-full h-full">
+      <video
+        ref={ref}
+        autoPlay
+        playsInline
+        muted
+        onLoadedData={() => setVideoDecoded(true)}
+        onPlaying={() => setVideoDecoded(true)}
+        className={`w-full h-full object-cover ${showNativeVideo ? '' : 'opacity-0'}`}
+      />
+      {!showNativeVideo && relayFrame && (
+        <img
+          src={relayFrame}
+          alt={alt || 'Speaker video'}
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+      )}
+    </div>
   );
 };
 
@@ -181,10 +209,14 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
 
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [audioUnlockTick, setAudioUnlockTick] = useState(0);
+  const [remoteRelayFrames, setRemoteRelayFrames] = useState<Record<string, string>>({});
+  const [p2pConnectedPeerIds, setP2pConnectedPeerIds] = useState<Set<string>>(new Set());
+  const [allowRelayFallback, setAllowRelayFallback] = useState(false);
   const handleAutoplayBlocked = useCallback(() => setAudioBlocked(true), []);
   const handleAudioPlaying = useCallback(() => setAudioBlocked(false), []);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const relayRef = useRef<WsMediaRelay | null>(null);
   const peerStatesRef = useRef<Map<string, PeerSignalState>>(new Map());
   const remoteTrackMapRef = useRef<Map<string, Map<string, MediaStreamTrack>>>(new Map());
   const pendingIceMapRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
@@ -202,6 +234,39 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
       })
       .catch(() => {});
   }, []);
+
+  // Real-time WebSocket Audio + Video Relay ensures seated voices & cameras always reach every peer & listener
+  useEffect(() => {
+    const fallbackTimer = setTimeout(() => {
+      setAllowRelayFallback(true);
+    }, 1800);
+
+    const relay = new WsMediaRelay(`team_${team.teamId}`, currentUser.userId, {
+      onPeerVideoFrame: (fromUserId, frame) => {
+        setRemoteRelayFrames((prev) => {
+          if (!frame) {
+            if (!(fromUserId in prev)) return prev;
+            const copy = { ...prev };
+            delete copy[fromUserId];
+            return copy;
+          }
+          return { ...prev, [fromUserId]: frame };
+        });
+      },
+      onAutoplayBlocked: () => setAudioBlocked(true),
+    });
+    relayRef.current = relay;
+
+    return () => {
+      clearTimeout(fallbackTimer);
+      relay.destroy();
+      if (relayRef.current === relay) {
+        relayRef.current = null;
+      }
+      setRemoteRelayFrames({});
+      setAllowRelayFallback(false);
+    };
+  }, [team.teamId, currentUser.userId]);
 
   useEffect(() => {
     cameraOnRef.current = cameraOn;
@@ -802,6 +867,12 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
       const iceState = pc.iceConnectionState;
       const isInitiator = currentUser.userId < remoteUserId;
       if (iceState === 'connected' || iceState === 'completed') {
+        setP2pConnectedPeerIds((prev) => {
+          if (prev.has(remoteUserId)) return prev;
+          const next = new Set(prev);
+          next.add(remoteUserId);
+          return next;
+        });
         if (state.iceRestartTimer) {
           clearTimeout(state.iceRestartTimer);
           state.iceRestartTimer = null;
@@ -818,11 +889,19 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
             }
           }, 4000);
         }
-      } else if (iceState === 'failed' && isInitiator) {
-        try {
-          pc.restartIce();
-          void negotiateWithPeer(remoteUserId);
-        } catch {}
+      } else if (iceState === 'failed' || iceState === 'closed') {
+        setP2pConnectedPeerIds((prev) => {
+          if (!prev.has(remoteUserId)) return prev;
+          const next = new Set(prev);
+          next.delete(remoteUserId);
+          return next;
+        });
+        if (iceState === 'failed' && isInitiator) {
+          try {
+            pc.restartIce();
+            void negotiateWithPeer(remoteUserId);
+          } catch {}
+        }
       }
     };
 
@@ -1245,6 +1324,53 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
     [seats, currentUser.userId]
   );
 
+  // Keep WS Media Relay synchronized with seated mic/camera tracks and suppress P2P-healthy peers to prevent double audio
+  useEffect(() => {
+    const relay = relayRef.current;
+    if (!relay) return;
+
+    const p2pHealthyAudioPeers: string[] = [];
+    for (const peerId of p2pConnectedPeerIds) {
+      const stream = remoteStreams[peerId];
+      if (stream && stream.getAudioTracks().some((t) => t.readyState === 'live' && !t.muted)) {
+        p2pHealthyAudioPeers.push(peerId);
+      }
+    }
+    relay.setSuppressedAudioPeers(p2pHealthyAudioPeers);
+
+    const otherPeers = peersInRoom.filter((p) => p.userId !== currentUser.userId);
+    const allPeersP2PHealthy =
+      otherPeers.length > 0 && otherPeers.every((p) => p2pHealthyAudioPeers.includes(p.userId));
+    const p2pVideoHealthy =
+      otherPeers.length > 0 &&
+      otherPeers.every((p) => {
+        if (!p2pConnectedPeerIds.has(p.userId)) return false;
+        const stream = remoteStreams[p.userId];
+        return Boolean(stream && stream.getVideoTracks().some((t) => t.readyState === 'live' && !t.muted));
+      });
+
+    relay.setUpstreamPaused({
+      audioPaused: !allowRelayFallback || allPeersP2PHealthy,
+      videoPaused: !allowRelayFallback || p2pVideoHealthy,
+    });
+
+    const isSeated = mySeat !== null;
+    relay.updateMedia(isSeated ? localStream : null, {
+      sendAudio: isSeated && !micMuted,
+      sendVideo: isSeated && cameraOn,
+    });
+  }, [
+    mySeat,
+    localStream,
+    micMuted,
+    cameraOn,
+    p2pConnectedPeerIds,
+    remoteStreams,
+    peersInRoom,
+    allowRelayFallback,
+    currentUser.userId,
+  ]);
+
   // Union of active Firestore liveViewers + live WebSocket peers + self for accurate +1/-1 live count
   const watchingCount = useMemo(() => {
     const union = new Set<string>(liveViewerIds);
@@ -1255,9 +1381,15 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
     return Math.max(1, union.size);
   }, [liveViewerIds, peersInRoom, currentUser.userId]);
 
+  const handleUnlockAllStageAudio = () => {
+    setAudioBlocked(false);
+    setAudioUnlockTick((c) => c + 1);
+    relayRef.current?.unlockAudio();
+  };
+
   return (
     <div
-      onClick={audioBlocked ? () => setAudioUnlockTick((c) => c + 1) : undefined}
+      onClick={audioBlocked ? handleUnlockAllStageAudio : undefined}
       className="fixed inset-0 z-50 bg-[#0d0a1c] text-white flex flex-col"
     >
       {/* Accessible audio sinks strictly for seated speakers (everyone hears seated speakers 1..6 even if camera is OFF) */}
@@ -1329,11 +1461,11 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
         {audioBlocked && (
           <button
             type="button"
-            onClick={() => setAudioUnlockTick((c) => c + 1)}
+            onClick={handleUnlockAllStageAudio}
             className="w-full py-2.5 px-4 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-2 shadow-lg animate-bounce"
           >
             <Volume2 className="w-4 h-4 shrink-0" />
-            <span>Sagalee Live Dhaga’uuf Tuqaa / Tap to Hear Live Audio</span>
+            <span>Tap to Hear Live Audio</span>
           </button>
         )}
 
@@ -1351,7 +1483,7 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
                 className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-[11px] inline-flex items-center gap-1.5 transition-colors disabled:opacity-60"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${retryingMedia ? 'animate-spin' : ''}`} />
-                <span>{retryingMedia ? 'Checking...' : 'Hayyama Camera & Mic Kenni / Retry'}</span>
+                <span>{retryingMedia ? 'Checking...' : 'Allow Camera & Mic / Retry'}</span>
               </button>
             )}
           </div>
@@ -1423,11 +1555,17 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
               : occupantId
               ? remoteStreams[occupantId] || null
               : null;
+            const seatRelayFrame =
+              !isMeOnSeat && occupantId ? remoteRelayFrames[occupantId] || null : null;
             const hasVideoTrack = Boolean(
               seatStream &&
                 seatStream.getVideoTracks().some((t) => t.readyState === 'live')
             );
-            const showSeatVideo = Boolean(occupantId && seatCameraOn && seatStream && hasVideoTrack);
+            const showSeatVideo = Boolean(
+              occupantId &&
+                seatCameraOn &&
+                ((seatStream && hasVideoTrack) || Boolean(seatRelayFrame))
+            );
 
             const myPendingOnThisSeat = seatRequests.some(
               (r) => r.seatNumber === num && r.userId === currentUser.userId
@@ -1465,9 +1603,13 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
                 {occupantId ? (
                   <>
                     {/* STRICT PER-SEAT CAMERA VIDEO: renders ONLY inside this exact seat frame! */}
-                    {showSeatVideo && seatStream ? (
+                    {showSeatVideo ? (
                       <div className="absolute inset-0">
-                        <SeatVideoSlot stream={seatStream} />
+                        <SeatVideoSlot
+                          stream={seatStream}
+                          relayFrame={seatRelayFrame}
+                          alt={seat?.displayName || `Seat ${num}`}
+                        />
                       </div>
                     ) : (
                       <div className="relative flex flex-col items-center justify-center">

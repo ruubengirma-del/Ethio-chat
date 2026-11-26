@@ -22,6 +22,7 @@ import {
   extractMentionUsernames,
   REACTION_EMOJIS_8,
 } from '../../lib/socialHelpers';
+import { dispatchPushNotification } from '../../lib/pushNotifications';
 import { AudioRecorder } from '../chat/AudioRecorder';
 import { GoldVerifiedBadge } from '../common/GoldVerifiedBadge';
 import { 
@@ -295,6 +296,18 @@ export const CommentsModal: React.FC<CommentsModalProps> = ({
         commentId,
         text: opts.text || (opts.mediaType === 'audio' ? 'Voice comment' : 'Photo comment'),
       });
+      if (post.authorId !== userProfile.userId) {
+        const pushSnippet = opts.text || (opts.mediaType === 'audio' ? 'Voice comment' : 'Photo comment');
+        void dispatchPushNotification({
+          type: 'comment',
+          toUserId: post.authorId,
+          fromUsername: userProfile.username,
+          title: `${userProfile.displayName} commented`,
+          text: pushSnippet,
+          postId: post.postId,
+          commentId,
+        });
+      }
 
       // Notify replied comment author if different from post author
       if (replyingTo && replyingTo.authorId !== post.authorId) {
@@ -306,6 +319,17 @@ export const CommentsModal: React.FC<CommentsModalProps> = ({
           commentId,
           text: `replied to your comment: ${opts.text}`,
         });
+        if (replyingTo.authorId !== userProfile.userId) {
+          void dispatchPushNotification({
+            type: 'comment',
+            toUserId: replyingTo.authorId,
+            fromUsername: userProfile.username,
+            title: `${userProfile.displayName} replied`,
+            text: opts.text || 'Replied to your comment',
+            postId: post.postId,
+            commentId,
+          });
+        }
       }
 
       // Notify any @mentioned users via Firestore + Push (with commentId)

@@ -13,6 +13,7 @@ export default defineConfig(() => {
         registerType: 'autoUpdate',
         manifest: false, // Uses public/manifest.json already linked in index.html
         workbox: {
+          importScripts: ['/sw-notifications.js'],
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           navigateFallbackDenylist: [/^\/api\//, /^\/ws\//, /^\/\.well-known\//],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,

@@ -23,6 +23,25 @@
     background-color: #ffffff;
   }
 
+  *,
+  *::before,
+  *::after {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  input,
+  textarea,
+  select,
+  [contenteditable="true"],
+  .allow-copy,
+  .allow-copy * {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+
   html.dark body {
     background-color: #090714;
   }

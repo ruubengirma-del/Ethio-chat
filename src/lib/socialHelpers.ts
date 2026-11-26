@@ -200,7 +200,7 @@ export async function dispatchMentionNotifications(params: {
     uniqueRecipientIds.add(target.userId);
 
     const notificationId = `notif_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    const mentionText = `@${params.actor.username} si @mention godhe`;
+    const mentionText = `@${params.actor.username} mentioned you`;
     const docData: AppNotification = {
       notificationId,
       recipientId: target.userId,
@@ -230,7 +230,7 @@ export async function dispatchMentionNotifications(params: {
         fromUsername: params.actor.username,
         postId: params.postId,
         ...(params.commentId ? { commentId: params.commentId } : {}),
-        text: docData.text || `@${params.actor.username} si @mention godhe`,
+        text: docData.text || `@${params.actor.username} mentioned you`,
       });
     })
   );

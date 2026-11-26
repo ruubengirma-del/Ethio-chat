@@ -29,6 +29,7 @@ import {
 } from '../../lib/offlineSync';
 import { compressImage, processChatVideoFile } from '../../lib/mediaCompression';
 import { createAppNotification, CHAT_WALLPAPERS, isUserOnlineNow, formatLastSeen, saveMediaToDevice, saveTextToDevice } from '../../lib/socialHelpers';
+import { dispatchPushNotification } from '../../lib/pushNotifications';
 import { AudioRecorder } from './AudioRecorder';
 import { MediaLightboxModal } from '../common/MediaLightboxModal';
 import { GoldVerifiedBadge } from '../common/GoldVerifiedBadge';
@@ -458,18 +459,27 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
       }).catch(() => {});
 
       if (!skipNotify) {
+        const groupName = liveGroupRoom?.groupName || 'Group';
         await Promise.all(
           members
             .filter((mid) => mid !== userProfile.userId)
-            .map((mid) =>
-              createAppNotification({
+            .map(async (mid) => {
+              await createAppNotification({
                 recipientId: mid,
                 actor: userProfile,
                 type: 'group',
                 chatId,
-                text: `${liveGroupRoom?.groupName || 'Group'}: ${lastMessageText}`,
-              })
-            )
+                text: `${groupName}: ${lastMessageText}`,
+              });
+              void dispatchPushNotification({
+                type: 'message',
+                toUserId: mid,
+                fromUsername: userProfile.username,
+                title: `${groupName} · ${userProfile.displayName}`,
+                text: lastMessageText,
+                chatId,
+              });
+            })
         );
       }
     } else if (recipient) {
@@ -482,6 +492,17 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
         ...(skipNotify ? {} : { unreadCounts: { [recipient.userId]: increment(1) } }),
         updatedAt: now
       }, { merge: true });
+
+      if (!skipNotify) {
+        void dispatchPushNotification({
+          type: 'message',
+          toUserId: recipient.userId,
+          fromUsername: userProfile.username,
+          title: userProfile.displayName,
+          text: lastMessageText,
+          chatId,
+        });
+      }
     }
   };
 

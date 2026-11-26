@@ -79,7 +79,7 @@ export const WarningAppealModal: React.FC<WarningAppealModalProps> = ({ isOpen, 
 
   const handleSubmitAppeal = async () => {
     if (!appealMessage.trim() && !photoEvidenceUrl && !videoEvidenceUrl) {
-      setErrMsg('Maaloo barreeffama falmii keetii ykn ragaa galchi.');
+      setErrMsg('Please enter an appeal message or attach supporting evidence.');
       return;
     }
     setIsSubmitting(true);
@@ -183,7 +183,7 @@ export const WarningAppealModal: React.FC<WarningAppealModalProps> = ({ isOpen, 
               <CheckCircle2 className="w-8 h-8" />
             </div>
             <h4 className="font-extrabold text-base text-slate-900 dark:text-white">
-              Falmiin kee {ADMIN_MODERATION_EMAIL} tiif ergameera!
+              Your appeal has been sent to {ADMIN_MODERATION_EMAIL}!
             </h4>
             <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
               {submitted.emailSent
@@ -213,10 +213,10 @@ export const WarningAppealModal: React.FC<WarningAppealModalProps> = ({ isOpen, 
               {/* Report Summary */}
               <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50 space-y-2">
                 <p className="text-xs font-extrabold text-amber-800 dark:text-amber-300">
-                  Account kee irratti report {userProfile.reportsCount || 250}+ galmaa'eera
+                  {userProfile.reportsCount || 250}+ reports recorded on your account
                 </p>
                 <p className="text-[11px] text-amber-700 dark:text-amber-300/90 leading-relaxed">
-                  Sababoota irratti himatamte (2,500 yoo gahe account kee cufama):
+                  Reported reasons (reaching 2,500 reports will suspend your account):
                 </p>
                 <ul className="space-y-1 text-xs font-semibold text-slate-800 dark:text-slate-100">
                   {(userProfile.warningReasons && userProfile.warningReasons.length > 0
@@ -249,19 +249,19 @@ export const WarningAppealModal: React.FC<WarningAppealModalProps> = ({ isOpen, 
                   />
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Ji'a tokko keessatti postoota kee yoo 400,000+ share godhaman Warning kun ofiin bada.
+                  This warning is automatically removed once your posts reach 400,000+ shares within a month.
                 </p>
               </div>
 
               {/* Appeal / Defense Form */}
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                  Falmii & Ragaa kee gara {ADMIN_MODERATION_EMAIL} tiif ergi
+                  Send your appeal &amp; evidence to {ADMIN_MODERATION_EMAIL}
                 </label>
                 <textarea
                   value={appealMessage}
                   onChange={(e) => setAppealMessage(e.target.value)}
-                  placeholder="Waan irratti himatamte sirrii miti yoo ta'e, asitti ibsi fi ragaa qabdu dabaladhu..."
+                  placeholder="If these reports are inaccurate, explain why and attach supporting evidence below..."
                   rows={4}
                   maxLength={1500}
                   className="w-full px-3.5 py-2.5 rounded-2xl bg-slate-50 dark:bg-[#201c38] border border-slate-200 dark:border-purple-900/50 text-xs sm:text-sm text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-[#7560DF] resize-none"
@@ -281,7 +281,7 @@ export const WarningAppealModal: React.FC<WarningAppealModalProps> = ({ isOpen, 
                     className="flex-1 py-2.5 px-3 rounded-2xl bg-slate-100 dark:bg-[#201c38] text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-center gap-1.5"
                   >
                     <ImageIcon className="w-4 h-4 text-emerald-500" />
-                    <span>{photoEvidenceUrl ? 'Photo Added ✓' : 'Suuraa Ragaa'}</span>
+                    <span>{photoEvidenceUrl ? 'Photo Added ✓' : 'Evidence Photo'}</span>
                   </button>
 
                   <input
@@ -297,7 +297,7 @@ export const WarningAppealModal: React.FC<WarningAppealModalProps> = ({ isOpen, 
                     className="flex-1 py-2.5 px-3 rounded-2xl bg-slate-100 dark:bg-[#201c38] text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-center gap-1.5"
                   >
                     <VideoIcon className="w-4 h-4 text-blue-500" />
-                    <span>{videoEvidenceUrl ? 'Video Added ✓' : 'Viidiyoo Ragaa'}</span>
+                    <span>{videoEvidenceUrl ? 'Video Added ✓' : 'Evidence Video'}</span>
                   </button>
                 </div>
 

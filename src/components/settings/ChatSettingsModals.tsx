@@ -176,7 +176,7 @@ export const FontSizeModal: React.FC<{ isOpen: boolean; onClose: () => void }> =
                   {active && <Check className="w-4 h-4 text-[#7560DF]" />}
                 </div>
                 <div className={`inline-block px-3.5 py-2 rounded-2xl bg-[#7560DF] text-white ${opt.sampleClass}`}>
-                  Akkam jirta! Ethio Chat preview ✨
+                  Hello! Ethio Chat preview ✨
                 </div>
               </button>
             );
@@ -374,7 +374,7 @@ export const FontStyleModal: React.FC<{ isOpen: boolean; onClose: () => void }> 
                     </p>
                   </div>
                   <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                    Ethio Chat · Akkam jirta! ✨ ({font.tagline})
+                    Ethio Chat · Hello! ✨ ({font.tagline})
                   </p>
                 </div>
                 {active && <Check className="w-5 h-5 text-[#7560DF] shrink-0" />}

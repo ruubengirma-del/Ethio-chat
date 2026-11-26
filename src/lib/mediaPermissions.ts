@@ -37,33 +37,33 @@ export function formatMediaPermissionError(err: unknown): {
     return {
       permissionDenied: true,
       message:
-        'Hayyamni Camera/Microphone dhorkameera (Permission denied). Mallattoo 🔒 URL biraa ykn Settings browser keessaa Camera fi Mic "Allow" godhaa, sana booda "Retry / Hayyama Kenni" tuqaa.',
+        'Camera/Microphone permission was denied. Tap the lock icon next to the URL or open browser Settings to set Camera & Mic to "Allow", then tap "Allow Camera & Mic / Retry".',
     };
   }
 
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
     return {
       permissionDenied: false,
-      message: 'Camera ykn Microphone bilbila/kompiitara kana irratti hin argamne.',
+      message: 'No Camera or Microphone was found on this device.',
     };
   }
 
   if (name === 'NotReadableError' || name === 'TrackStartError') {
     return {
       permissionDenied: false,
-      message: 'Camera ykn Microphone app biraan qabamee jira. App biraa cufaatii irra deebi’aa yaalaa.',
+      message: 'Camera or Microphone is currently in use by another app. Close the other app and try again.',
     };
   }
 
   return {
     permissionDenied: false,
-    message: rawMsg || 'Camera ykn Microphone banuu hin dandeenye. Irra deebi’aa yaalaa.',
+    message: rawMsg || 'Could not open Camera or Microphone. Please try again.',
   };
 }
 
 async function tryGetUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream> {
   if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    throw new Error('Browser kun live camera fi microphone (HTTPS/WebRTC) hin deeggaru.');
+    throw new Error('This browser does not support live camera and microphone (HTTPS/WebRTC).');
   }
   return navigator.mediaDevices.getUserMedia(constraints);
 }
@@ -125,7 +125,7 @@ export async function acquireMediaWithFallback(opts: {
             audioGranted: audioOnly.getAudioTracks().length > 0,
             videoGranted: false,
             errorMessage: formatted.permissionDenied
-              ? 'Camera hayyama hin arganne — ammaaf sagalee (Audio) qofaan itti fufa. Camera banuuf "Cam On" ykn "Retry" tuqaa.'
+              ? 'Camera permission not granted — continuing with audio only for now. Tap "Cam On" or "Retry" to enable video.'
               : formatted.message,
             permissionDenied: formatted.permissionDenied,
           };
@@ -180,7 +180,7 @@ export async function acquireVideoTrackOnly(facingMode: 'user' | 'environment' =
     if (!track) {
       return {
         track: null,
-        errorMessage: 'Camera track hin argamne.',
+        errorMessage: 'Camera track not found.',
         permissionDenied: false,
       };
     }

@@ -2378,7 +2378,7 @@ app.post('/api/subscription/sync-lifecycle', async (req, res) => {
   }
 });
 
-// 9. Send Firebase Cloud Messaging (FCM) Push Notification with postId & commentId deep-link data
+// 9. Send Firebase Cloud Messaging (FCM) Push Notification for calls, messages, comments & @mentions
 app.post('/api/notifications/send-push', async (req, res) => {
   if (!adminReady) {
     res.status(200).json({ ok: false, reason: 'FIREBASE_ADMIN_UNAVAILABLE' });
@@ -2401,14 +2401,26 @@ app.post('/api/notifications/send-push', async (req, res) => {
     return;
   }
 
+  const notifType = String(req.body?.type || 'mention').trim().slice(0, 24);
   const toUserId = String(req.body?.toUserId || '').trim();
   const postId = String(req.body?.postId || '').trim();
   const commentId = String(req.body?.commentId || '').trim();
+  const chatId = String(req.body?.chatId || '').trim();
+  const callId = String(req.body?.callId || '').trim();
   const fromUsername = String(req.body?.fromUsername || 'member').trim().slice(0, 50);
-  const bodyText = String(req.body?.text || `@${fromUsername} si @mention godhe`).trim().slice(0, 240);
+  const titleText = String(req.body?.title || 'Ethio Chat').trim().slice(0, 80);
+  const defaultBody =
+    notifType === 'call'
+      ? `Incoming call from @${fromUsername}`
+      : notifType === 'message'
+      ? `@${fromUsername} sent you a message`
+      : notifType === 'comment'
+      ? `@${fromUsername} commented on your post`
+      : `@${fromUsername} mentioned you`;
+  const bodyText = String(req.body?.text || defaultBody).trim().slice(0, 240);
 
-  if (!toUserId || !postId) {
-    res.status(400).json({ ok: false, error: 'toUserId and postId are required.' });
+  if (!toUserId || (!postId && !chatId && !callId)) {
+    res.status(400).json({ ok: false, error: 'toUserId and a target ID are required.' });
     return;
   }
   if (toUserId === callerUid) {
@@ -2461,33 +2473,47 @@ app.post('/api/notifications/send-push', async (req, res) => {
     }
 
     const appOrigin = (process.env.APP_URL || '').replace(/\/+$/, '');
-    const relativePath = `/?post=${encodeURIComponent(postId)}${commentId ? `&comment=${encodeURIComponent(commentId)}` : ''}`;
+    let relativePath = '/';
+    if (callId) {
+      relativePath = `/?call=${encodeURIComponent(callId)}`;
+    } else if (postId) {
+      relativePath = `/?post=${encodeURIComponent(postId)}${commentId ? `&comment=${encodeURIComponent(commentId)}` : ''}`;
+    } else if (chatId) {
+      relativePath = `/?chat=${encodeURIComponent(chatId)}`;
+    }
     const fullLink = appOrigin ? `${appOrigin}${relativePath}` : relativePath;
 
     const dataPayload: Record<string, string> = {
-      type: 'mention',
-      postId,
+      type: notifType,
       fromUsername,
+      title: titleText,
       body: bodyText,
       url: relativePath,
+      ...(postId ? { postId } : {}),
       ...(commentId ? { commentId } : {}),
+      ...(chatId ? { chatId } : {}),
+      ...(callId ? { callId } : {}),
     };
 
     const result = await getAdminMessaging(getApp()).sendEachForMulticast({
       tokens: tokens.map((t) => t.token),
       notification: {
-        title: 'Ethio Chat',
+        title: titleText,
         body: bodyText,
       },
       data: dataPayload,
       webpush: {
+        headers: {
+          Urgency: notifType === 'call' ? 'high' : 'normal',
+        },
         fcmOptions: {
           link: fullLink,
         },
         notification: {
-          title: 'Ethio Chat',
+          title: titleText,
           body: bodyText,
           icon: '/assets/aistudio/20261111_152710_57efcc53.png',
+          requireInteraction: notifType === 'call',
         },
       },
     });
@@ -3013,11 +3039,125 @@ async function startServer() {
     });
   });
 
+  // Real-Time WebSocket Audio + Video Media Relay (guarantees working calls & live stage on strict mobile NATs)
+  const mediaRelayRooms = new Map<string, Map<string, WebSocket>>();
+  const mediaRelayWss = new WebSocketServer({ noServer: true });
+
+  const mediaRelayKeepAlive = setInterval(() => {
+    mediaRelayWss.clients.forEach((client) => {
+      const tracked = client as WebSocket & { isAlive?: boolean };
+      if (tracked.isAlive === false) {
+        try {
+          client.terminate();
+        } catch {}
+        return;
+      }
+      tracked.isAlive = false;
+      try {
+        client.ping();
+      } catch {}
+    });
+  }, 25000);
+
+  mediaRelayWss.on('close', () => {
+    clearInterval(mediaRelayKeepAlive);
+  });
+
+  mediaRelayWss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
+    const trackedWs = ws as WebSocket & { isAlive?: boolean };
+    trackedWs.isAlive = true;
+    ws.on('pong', () => {
+      trackedWs.isAlive = true;
+    });
+
+    let roomId = '';
+    let userId = '';
+    try {
+      const parsed = new URL(req.url || '/ws/media-relay', 'http://localhost');
+      roomId = String(parsed.searchParams.get('roomId') || '').trim().slice(0, 120);
+      userId = String(parsed.searchParams.get('userId') || '').trim().slice(0, 80);
+    } catch {
+      roomId = '';
+      userId = '';
+    }
+
+    if (!roomId || !userId) {
+      ws.close();
+      return;
+    }
+
+    let room = mediaRelayRooms.get(roomId);
+    if (!room) {
+      room = new Map();
+      mediaRelayRooms.set(roomId, room);
+    }
+    const existing = room.get(userId);
+    if (existing && existing !== ws) {
+      try {
+        existing.close();
+      } catch {}
+    }
+    room.set(userId, ws);
+
+    const userIdBuf = Buffer.from(userId, 'utf8');
+    const idLenHeader = Buffer.from([Math.min(255, userIdBuf.length)]);
+
+    ws.on('message', (data, isBinary) => {
+      trackedWs.isAlive = true;
+      const currentRoom = mediaRelayRooms.get(roomId);
+      if (!currentRoom) return;
+
+      if (isBinary) {
+        const payloadBuf = Buffer.isBuffer(data)
+          ? data
+          : Array.isArray(data)
+          ? Buffer.concat(data)
+          : Buffer.from(data as ArrayBuffer);
+        const framed = Buffer.concat([idLenHeader, userIdBuf.subarray(0, 255), payloadBuf]);
+        for (const [peerId, peerWs] of currentRoom.entries()) {
+          if (peerId === userId) continue;
+          if (peerWs.readyState === WebSocket.OPEN) {
+            peerWs.send(framed, { binary: true });
+          }
+        }
+        return;
+      }
+
+      try {
+        const msg = JSON.parse(String(data)) as Record<string, unknown>;
+        const out = JSON.stringify({ ...msg, fromUserId: userId });
+        for (const [peerId, peerWs] of currentRoom.entries()) {
+          if (peerId === userId) continue;
+          if (peerWs.readyState === WebSocket.OPEN) {
+            peerWs.send(out);
+          }
+        }
+      } catch {
+        // ignore malformed JSON
+      }
+    });
+
+    ws.on('close', () => {
+      const currentRoom = mediaRelayRooms.get(roomId);
+      if (!currentRoom) return;
+      if (currentRoom.get(userId) === ws) {
+        currentRoom.delete(userId);
+        if (currentRoom.size === 0) {
+          mediaRelayRooms.delete(roomId);
+        }
+      }
+    });
+  });
+
   httpServer.on('upgrade', (request, socket, head) => {
     const reqUrl = request.url || '';
     if (reqUrl.startsWith('/ws/team-live')) {
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit('connection', ws, request);
+      });
+    } else if (reqUrl.startsWith('/ws/media-relay')) {
+      mediaRelayWss.handleUpgrade(request, socket, head, (ws) => {
+        mediaRelayWss.emit('connection', ws, request);
       });
     }
   });

@@ -2,32 +2,7 @@ export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:openrelay.metered.ca:80' },
-  {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:80?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turns:openrelay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
+  { urls: 'stun:stun.cloudflare.com:3478' },
 ];
 
 export const DEFAULT_RTC_CONFIG: RTCConfiguration = {
@@ -45,7 +20,7 @@ export async function getRtcConfiguration(): Promise<RTCConfiguration> {
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 800);
+    const timeout = setTimeout(() => controller.abort(), 1200);
     const resp = await fetch('/api/rtc-config', { signal: controller.signal });
     clearTimeout(timeout);
     if (resp.ok) {
@@ -60,7 +35,7 @@ export async function getRtcConfiguration(): Promise<RTCConfiguration> {
       }
     }
   } catch {
-    // Use built-in STUN + TURN servers immediately
+    // Use fast built-in Google + Cloudflare STUN servers immediately
   }
 
   cachedRtcConfig = DEFAULT_RTC_CONFIG;

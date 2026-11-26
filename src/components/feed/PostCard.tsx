@@ -677,10 +677,10 @@ export const PostCard: React.FC<PostCardProps> = ({
                   </div>
                   <div className="space-y-1 max-w-xs">
                     <p className="text-sm font-bold text-white">
-                      Viidiyoon kun amma taphachuu hin dandeenye
+                      This video cannot play right now
                     </p>
                     <p className="text-xs text-slate-400 leading-relaxed">
-                      Yoo networkiin citee jiraate &quot;Irra Deebi&apos;i&quot; tuqi; yoo viidiyoon kun kan duraan fooyya&apos;uu dura post ta&apos;e ta&apos;e garuu deebisanii post gochuun ni barbaachisa.
+                      If your connection dropped, tap &quot;Retry&quot;. If this video was uploaded before recent updates, re-posting may be required.
                     </p>
                   </div>
                   <button
@@ -692,7 +692,7 @@ export const PostCard: React.FC<PostCardProps> = ({
                     className="px-4 py-2 rounded-full bg-[#7560DF] hover:bg-[#624ec7] text-white text-xs font-bold flex items-center gap-1.5 shadow-md transition-colors"
                   >
                     <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Irra Deebi&apos;i (Retry)</span>
+                    <span>Retry</span>
                   </button>
                 </div>
               ) : (

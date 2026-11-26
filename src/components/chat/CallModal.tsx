@@ -26,6 +26,13 @@ import {
   consumePrimedStream,
 } from '../../lib/mediaPermissions';
 import { getRtcConfiguration } from '../../lib/rtcConfig';
+import {
+  startIncomingRingtone,
+  startRingbackTone,
+  stopCallSounds,
+  unlockCallAudio,
+} from '../../lib/callSounds';
+import { WsMediaRelay } from '../../lib/wsMediaRelay';
 
 interface CallModalProps {
   call: CallSession | null;
@@ -68,11 +75,18 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
   const [retryingMedia, setRetryingMedia] = useState(false);
   const [localStreamState, setLocalStreamState] = useState<MediaStream | null>(null);
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [remoteVideoDecoded, setRemoteVideoDecoded] = useState(false);
+  const [remoteRelayFrame, setRemoteRelayFrame] = useState<string | null>(null);
+  const [relayConnected, setRelayConnected] = useState(false);
+  const [relayAudioReceiving, setRelayAudioReceiving] = useState(false);
+  const [p2pAudioLive, setP2pAudioLive] = useState(false);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [iceConnected, setIceConnected] = useState(false);
+  const [allowRelayFallback, setAllowRelayFallback] = useState(false);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const relayRef = useRef<WsMediaRelay | null>(null);
   const remoteTracksRef = useRef<Map<string, MediaStreamTrack>>(new Map());
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -90,6 +104,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
   const isPolite = !isCaller;
   const isVideo = (liveCall?.callType || call?.callType) === 'video';
   const callId = call?.callId || '';
+  const peerUserId = isCaller ? (liveCall?.calleeId || call?.calleeId || '') : (liveCall?.callerId || call?.callerId || '');
 
   const enqueueSignaling = useCallback((fn: () => Promise<void>) => {
     signalingChainRef.current = signalingChainRef.current.then(fn).catch(() => {});
@@ -105,6 +120,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
 
     const hasActiveVideo = videoTracks.some((t) => !t.muted);
     setHasRemoteVideo(hasActiveVideo);
+    setP2pAudioLive(audioTracks.some((t) => !t.muted));
 
     if (remoteAudioRef.current) {
       if (audioTracks.length > 0) {
@@ -132,6 +148,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
         remoteVideoRef.current.play().catch(() => {});
       } else {
         remoteVideoRef.current.srcObject = null;
+        setRemoteVideoDecoded(false);
       }
     }
   }, []);
@@ -157,6 +174,9 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
   );
 
   const unlockAudioPlayback = useCallback(() => {
+    unlockCallAudio();
+    relayRef.current?.unlockAudio();
+    setAudioBlocked(false);
     if (remoteAudioRef.current && remoteAudioRef.current.srcObject) {
       remoteAudioRef.current.muted = false;
       remoteAudioRef.current.volume = 1;
@@ -272,6 +292,12 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
         }
       };
 
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') {
+          setIceConnected(true);
+        }
+      };
+
       pc.oniceconnectionstatechange = () => {
         const state = pc.iceConnectionState;
         if (state === 'connected' || state === 'completed') {
@@ -307,10 +333,22 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
   );
 
   const cleanupMedia = useCallback(() => {
+    stopCallSounds();
     if (iceRestartTimerRef.current) {
       clearTimeout(iceRestartTimerRef.current);
       iceRestartTimerRef.current = null;
     }
+    try {
+      relayRef.current?.destroy();
+    } catch {}
+    relayRef.current = null;
+    setRelayConnected(false);
+    setRelayAudioReceiving(false);
+    setRemoteRelayFrame(null);
+    setAllowRelayFallback(false);
+    setRemoteVideoDecoded(false);
+    setP2pAudioLive(false);
+
     try {
       unsubCandidatesRef.current?.();
     } catch {}
@@ -436,6 +474,94 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
     return () => unsub();
   }, [call?.callId, cleanupMedia, handleRemoteSignalingSnapshot]);
 
+  // Play Ringback tone (caller) or Incoming Ringtone (callee) strictly while ringing
+  useEffect(() => {
+    if (!liveCall) {
+      stopCallSounds();
+      return;
+    }
+    if (liveCall.status === 'ringing') {
+      if (isCaller) {
+        startRingbackTone();
+      } else {
+        startIncomingRingtone();
+      }
+    } else {
+      stopCallSounds();
+    }
+    return () => {
+      stopCallSounds();
+    };
+  }, [liveCall?.status, isCaller]);
+
+  // Real-time WebSocket Audio + Video Relay activates automatically within 1.8s when WebRTC P2P is blocked
+  useEffect(() => {
+    if (!callId || liveCall?.status !== 'active') {
+      relayRef.current?.destroy();
+      relayRef.current = null;
+      setRelayConnected(false);
+      setRelayAudioReceiving(false);
+      setRemoteRelayFrame(null);
+      setAllowRelayFallback(false);
+      return;
+    }
+
+    const fallbackTimer = setTimeout(() => {
+      setAllowRelayFallback(true);
+    }, 1800);
+
+    const relay = new WsMediaRelay(`call_${callId}`, currentUserId, {
+      onRelayConnectedChange: (connected) => setRelayConnected(connected),
+      onPeerAudioPacket: () => setRelayAudioReceiving(true),
+      onPeerVideoFrame: (_fromId, frame) => setRemoteRelayFrame(frame),
+      onAutoplayBlocked: () => setAudioBlocked(true),
+    });
+    relayRef.current = relay;
+
+    return () => {
+      clearTimeout(fallbackTimer);
+      relay.destroy();
+      if (relayRef.current === relay) {
+        relayRef.current = null;
+      }
+      setRelayConnected(false);
+      setRelayAudioReceiving(false);
+      setRemoteRelayFrame(null);
+      setAllowRelayFallback(false);
+    };
+  }, [callId, liveCall?.status, currentUserId]);
+
+  // Keep WS relay synced with local mic/camera tracks and avoid double audio when WebRTC P2P is healthy
+  useEffect(() => {
+    const relay = relayRef.current;
+    if (!relay) return;
+
+    const p2pAudioHealthy = iceConnected && p2pAudioLive;
+    const p2pVideoHealthy = iceConnected && hasRemoteVideo && remoteVideoDecoded;
+
+    relay.setSuppressedAudioPeers(p2pAudioHealthy && peerUserId ? [peerUserId] : []);
+    relay.setUpstreamPaused({
+      audioPaused: !allowRelayFallback && !p2pAudioHealthy ? true : p2pAudioHealthy,
+      videoPaused: !allowRelayFallback && !p2pVideoHealthy ? true : p2pVideoHealthy,
+    });
+    relay.updateMedia(localStreamState, {
+      sendAudio: !micMuted,
+      sendVideo: isVideo && !cameraOff,
+    });
+  }, [
+    localStreamState,
+    micMuted,
+    cameraOff,
+    isVideo,
+    iceConnected,
+    p2pAudioLive,
+    hasRemoteVideo,
+    remoteVideoDecoded,
+    allowRelayFallback,
+    peerUserId,
+    relayConnected,
+  ]);
+
   // Call timer when active
   useEffect(() => {
     if (liveCall?.status !== 'active') {
@@ -514,6 +640,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
   const handleAcceptCall = async () => {
     if (!liveCall || acceptedRef.current) return;
     acceptedRef.current = true;
+    stopCallSounds();
     unlockAudioPlayback();
 
     const wantVideo = liveCall.callType === 'video';
@@ -751,6 +878,12 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
     return `${m}:${s}`;
   };
 
+  const mediaConnected =
+    iceConnected || relayAudioReceiving || (allowRelayFallback && relayConnected);
+  const showP2PRemoteVideo = Boolean(hasRemoteVideo && remoteVideoDecoded);
+  const showRelayRemoteVideo = Boolean(!showP2PRemoteVideo && remoteRelayFrame);
+  const showAnyRemoteVideo = showP2PRemoteVideo || showRelayRemoteVideo;
+
   return (
     <div
       onClick={audioBlocked ? unlockAudioPlayback : undefined}
@@ -766,7 +899,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
           <span>{isVideo ? 'Video Call' : 'Audio Call'}</span>
           {liveCall.status === 'active' && (
             <span className="ml-1 font-mono text-white/80">
-              {iceConnected ? formatDuration(elapsedSec) : 'Connecting...'}
+              {mediaConnected ? formatDuration(elapsedSec) : 'Connecting...'}
             </span>
           )}
         </div>
@@ -787,7 +920,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
           className="mt-2 px-4 py-2 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs inline-flex items-center gap-2 shadow-lg animate-bounce"
         >
           <Volume2 className="w-4 h-4" />
-          <span>Sagalee Bani / Tap to Hear Sound</span>
+          <span>Tap to Hear Sound</span>
         </button>
       )}
 
@@ -800,10 +933,20 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
               autoPlay
               playsInline
               muted
-              className={`w-full h-full object-cover ${hasRemoteVideo ? '' : 'opacity-0'}`}
+              onLoadedData={() => setRemoteVideoDecoded(true)}
+              onPlaying={() => setRemoteVideoDecoded(true)}
+              className={`w-full h-full object-cover ${showP2PRemoteVideo ? '' : 'opacity-0'}`}
             />
 
-            {liveCall.status === 'active' && !hasRemoteVideo && (
+            {showRelayRemoteVideo && remoteRelayFrame && (
+              <img
+                src={remoteRelayFrame}
+                alt={peerName}
+                className="absolute inset-0 w-full h-full object-cover"
+              />
+            )}
+
+            {liveCall.status === 'active' && !showAnyRemoteVideo && (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-4 pointer-events-none">
                 <img
                   src={peerPhoto || `https://api.dicebear.com/7.x/bottts/svg?seed=${peerUsername}`}
@@ -812,7 +955,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
                 />
                 <h3 className="text-lg font-extrabold">{peerName}</h3>
                 <p className="text-xs text-white/60 mt-1">
-                  {iceConnected ? 'Camera off' : 'Connecting video...'}
+                  {mediaConnected ? 'Camera off' : 'Connecting video...'}
                 </p>
               </div>
             )}
@@ -867,7 +1010,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
             <p className="text-xs text-[#B09EFC]">@{peerUsername}</p>
             <p className="text-sm font-mono text-white/80">
               {liveCall.status === 'active'
-                ? iceConnected
+                ? mediaConnected
                   ? formatDuration(elapsedSec)
                   : 'Connecting audio...'
                 : liveCall.status === 'ringing'
@@ -892,7 +1035,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUserId, onClo
               className="px-3.5 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-[11px] inline-flex items-center gap-1.5 transition-colors disabled:opacity-60"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${retryingMedia ? 'animate-spin' : ''}`} />
-              <span>{retryingMedia ? 'Checking...' : 'Hayyama Camera & Mic Kenni / Retry'}</span>
+              <span>{retryingMedia ? 'Checking...' : 'Allow Camera & Mic / Retry'}</span>
             </button>
           </div>
         )}

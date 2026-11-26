@@ -68,10 +68,10 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
             </div>
             <div className="min-w-0">
               <h4 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-[#7560DF] transition-colors truncate">
-                Bilbilatti Buufadhu (Install App)
+                Install App on Device
               </h4>
               <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                Android fi iPhone irratti akka appitti fe&apos;adhu
+                Install as a native app on Android &amp; iPhone
               </p>
             </div>
           </div>
@@ -95,7 +95,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
                 </div>
                 <div>
                   <h3 className="font-extrabold text-base text-slate-900 dark:text-white">
-                    Ethio Chat Bilbilatti Buufadhu
+                    Install Ethio Chat
                   </h3>
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
                     Android &amp; iPhone App Install
@@ -113,7 +113,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
 
             <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-[#201c38] border border-slate-200/80 dark:border-purple-900/40 space-y-2">
               <p className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Linkii Appii (App URL)
+                App URL
               </p>
               <div className="flex items-center gap-2">
                 <input
@@ -136,23 +136,23 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
             {isIOS ? (
               <div className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                 <p className="font-bold text-slate-900 dark:text-white">iPhone / iPad (Safari):</p>
-                <p>1. Mallattoo <strong>Share</strong> jala jiru tuqi.</p>
-                <p>2. Gadi siqii <strong>Add to Home Screen</strong> jedhu filadhu.</p>
+                <p>1. Tap the <strong>Share</strong> icon at the bottom.</p>
+                <p>2. Scroll down and select <strong>Add to Home Screen</strong>.</p>
               </div>
             ) : (
               <div className="space-y-1.5 text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
                 <p className="font-bold text-slate-900 dark:text-white">Android (Chrome):</p>
-                <p>1. Linkii armaan olii Chrome keessatti kallattiin bani.</p>
-                <p>2. Tuqaa sadii (<strong>⋮</strong>) gubbaa mirgaa tuqi.</p>
-                <p>3. <strong>Install app</strong> ykn <strong>Add to Home screen</strong> filadhu — akka appii bilbilaatti siif fe&apos;ama.</p>
+                <p>1. Open the link above directly in Chrome.</p>
+                <p>2. Tap the three dots (<strong>⋮</strong>) in the top right.</p>
+                <p>3. Select <strong>Install app</strong> or <strong>Add to Home screen</strong> to install it on your phone.</p>
               </div>
             )}
 
             <div className="p-3 rounded-2xl bg-[#7560DF]/10 text-[#5c48c5] dark:text-[#B09EFC] text-[11px] leading-relaxed flex items-start gap-2">
               <ExternalLink className="w-4 h-4 shrink-0 mt-0.5" />
               <span>
-                Faayila <strong>.APK</strong> qofaa yoo barbaadde, linkii kana fuudhiitii{' '}
-                <strong>pwabuilder.com</strong> keessa galchuun APK Android uummachuu ni dandeessa.
+                Need a standalone <strong>.APK</strong> file? Paste this URL into{' '}
+                <strong>pwabuilder.com</strong> to generate an Android APK package.
               </span>
             </div>
 
@@ -161,7 +161,7 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
               onClick={() => setShowGuide(false)}
               className="w-full py-2.5 rounded-2xl bg-slate-100 dark:bg-[#241f42] hover:bg-slate-200 dark:hover:bg-[#2f2856] text-slate-800 dark:text-slate-100 font-bold text-sm transition-colors"
             >
-              Cufi
+              Close
             </button>
           </div>
         </div>
