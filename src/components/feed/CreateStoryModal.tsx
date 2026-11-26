@@ -14,6 +14,7 @@ import {
 import { compressImage, processVideoFile } from '../../lib/mediaCompression';
 import { AudienceVisibility, MediaType, Story } from '../../types';
 import { AudienceSelector } from '../common/AudienceSelector';
+import { useBackHandler } from '../../lib/backNavigation';
 import {
   X,
   Image as ImageIcon,
@@ -52,6 +53,7 @@ export const CreateStoryModal: React.FC<CreateStoryModalProps> = ({
 }) => {
   const { userProfile } = useAuth();
   const { t } = useLanguage();
+  useBackHandler(isOpen, onClose);
   const [content, setContent] = useState('');
   const [mediaType, setMediaType] = useState<MediaType>('none');
   const [mediaUrl, setMediaUrl] = useState('');

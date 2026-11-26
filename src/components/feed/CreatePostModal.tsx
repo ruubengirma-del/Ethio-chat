@@ -7,6 +7,7 @@ import { compressImage, processPostVideoFile } from '../../lib/mediaCompression'
 import { dispatchMentionNotifications } from '../../lib/socialHelpers';
 import { Post, MediaType, AudienceVisibility } from '../../types';
 import { AudienceSelector } from '../common/AudienceSelector';
+import { useBackHandler } from '../../lib/backNavigation';
 import {
   X,
   Image as ImageIcon,
@@ -43,6 +44,7 @@ export const CreatePostModal: React.FC<CreatePostModalProps> = ({
 }) => {
   const { userProfile, allUsers } = useAuth();
   const { t } = useLanguage();
+  useBackHandler(isOpen, onClose);
   const [content, setContent] = useState('');
   const [mediaType, setMediaType] = useState<MediaType>('none');
   const [mediaUrl, setMediaUrl] = useState<string>('');

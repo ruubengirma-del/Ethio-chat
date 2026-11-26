@@ -45,6 +45,7 @@ import { ReportModal } from './ReportModal';
 import { MultiPhotoGalleryModal } from './MultiPhotoGalleryModal';
 import { GoldVerifiedBadge } from '../common/GoldVerifiedBadge';
 import { MediaLightboxModal } from '../common/MediaLightboxModal';
+import { useBackHandler } from '../../lib/backNavigation';
 
 interface PostCardProps {
   post: Post;
@@ -85,6 +86,9 @@ export const PostCard: React.FC<PostCardProps> = ({
   const [postLikes, setPostLikes] = useState<PostLike[]>([]);
 
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useBackHandler(zoomSinglePhotoOpen, () => setZoomSinglePhotoOpen(false));
+  useBackHandler(showLikesModal, () => setShowLikesModal(false));
 
   const isAuthor = currentUser?.uid === post.authorId;
   const isFollowingAuthor = followingIds.has(post.authorId);

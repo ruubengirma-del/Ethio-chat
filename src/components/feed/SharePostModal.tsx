@@ -17,6 +17,7 @@ import {
 } from 'firebase/firestore';
 import { createAppNotification, getCurrentMonthKey } from '../../lib/socialHelpers';
 import { isOnline, queueOfflineMessage } from '../../lib/offlineSync';
+import { useBackHandler } from '../../lib/backNavigation';
 import { GoldVerifiedBadge } from '../common/GoldVerifiedBadge';
 import {
   X,
@@ -48,6 +49,7 @@ export const SharePostModal: React.FC<SharePostModalProps> = ({
 }) => {
   const { currentUser, userProfile, allUsers, blockedIds } = useAuth();
   const { t } = useLanguage();
+  useBackHandler(isOpen, onClose);
 
   const [joinedTeamIds, setJoinedTeamIds] = useState<string[]>([]);
   const [teamsMap, setTeamsMap] = useState<Record<string, Team>>({});

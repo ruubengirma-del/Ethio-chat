@@ -10,6 +10,12 @@ import {
   readPendingSignupFlow,
   clearPendingSignupFlow,
 } from '../../lib/otpFlowPersistence';
+import {
+  preloadGoogleIdentity,
+  promptInAppGoogleChooser,
+  renderInAppGoogleButton,
+} from '../../lib/googleIdentity';
+import { useBackHandler } from '../../lib/backNavigation';
 import { 
   Lock, 
   Mail, 
@@ -38,6 +44,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     requestSignUpCode,
     verifySignUpCode,
     signInWithGoogle,
+    signInWithGoogleCredential,
+    savedAccounts,
+    switchSavedAccount,
+    currentUser,
     resetPassword,
     requestPasswordResetCode,
     verifyPasswordResetCode,
@@ -64,10 +74,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [showFirebaseResetBackup, setShowFirebaseResetBackup] = useState(false);
   const [restoredSignupFromStorage, setRestoredSignupFromStorage] = useState(false);
 
+  // In-app Google account chooser sheet
+  const [showGoogleChooser, setShowGoogleChooser] = useState(false);
+  const [gisButtonMounted, setGisButtonMounted] = useState(false);
+  const gisButtonRef = useRef<HTMLDivElement | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const wasOpenRef = useRef(false);
+
+  useBackHandler(Boolean(isOpen && showGoogleChooser), () => setShowGoogleChooser(false));
+  useBackHandler(Boolean(isOpen && onClose && !showGoogleChooser), () => {
+    clearPendingForgotPwFlow();
+    clearPendingSignupFlow();
+    onClose?.();
+  });
+
+  useEffect(() => {
+    if (isOpen) {
+      void preloadGoogleIdentity();
+    } else {
+      setShowGoogleChooser(false);
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -326,20 +356,81 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
     }
   };
 
+  const handleGoogleError = (err: any) => {
+    let msg = err?.message || 'Google sign-in was cancelled';
+    if (msg.includes('DEVICE_ACCOUNT_LIMIT_REACHED')) {
+      msg = t('deviceAccountLimitReached');
+    } else if (msg.includes('EMAIL_ALREADY_IN_USE') || msg.includes('auth/email-already-in-use')) {
+      msg = t('emailAlreadyInUse');
+    }
+    setErrorMsg(msg);
+  };
+
+  useEffect(() => {
+    if (!showGoogleChooser) {
+      setGisButtonMounted(false);
+      return;
+    }
+    let cancelled = false;
+    void preloadGoogleIdentity().then(() => {
+      if (cancelled || !gisButtonRef.current) return;
+      const rendered = renderInAppGoogleButton(gisButtonRef.current, async (idToken) => {
+        setErrorMsg(null);
+        setLoading(true);
+        try {
+          await signInWithGoogleCredential(idToken);
+          setShowGoogleChooser(false);
+        } catch (err: any) {
+          handleGoogleError(err);
+        } finally {
+          setLoading(false);
+        }
+      });
+      setGisButtonMounted(rendered);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [showGoogleChooser]);
+
   const handleGoogleSignIn = async () => {
     setErrorMsg(null);
     setSuccessMsg(null);
     setLoading(true);
     try {
-      await signInWithGoogle();
-    } catch (err: any) {
-      let msg = err.message || 'Google sign-in was cancelled';
-      if (msg.includes('DEVICE_ACCOUNT_LIMIT_REACHED')) {
-        msg = t('deviceAccountLimitReached');
-      } else if (msg.includes('EMAIL_ALREADY_IN_USE') || msg.includes('auth/email-already-in-use')) {
-        msg = t('emailAlreadyInUse');
+      // 1. Trigger in-app Google One Tap / FedCM chooser directly inside the app
+      const res = await promptInAppGoogleChooser();
+      if (res.status === 'credential') {
+        try {
+          await signInWithGoogleCredential(res.idToken);
+          return;
+        } catch {
+          // If Firebase rejects token audience or needs fallback chooser, show in-app chooser
+          setShowGoogleChooser(true);
+          return;
+        }
       }
-      setErrorMsg(msg);
+      if (res.status === 'dismissed') {
+        return;
+      }
+      // 2. Fallback: open in-app Google Account Sheet (saved emails + embedded GIS button + account picker)
+      setShowGoogleChooser(true);
+    } catch (err: any) {
+      handleGoogleError(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDirectGoogleSelectAccount = async (loginHint?: string) => {
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    setLoading(true);
+    try {
+      await signInWithGoogle(loginHint);
+      setShowGoogleChooser(false);
+    } catch (err: any) {
+      handleGoogleError(err);
     } finally {
       setLoading(false);
     }
@@ -849,6 +940,126 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
             </div>
           )}
         </form>
+
+        {/* In-App Google Account Chooser Overlay */}
+        {showGoogleChooser && (
+          <div
+            onClick={() => setShowGoogleChooser(false)}
+            className="absolute inset-0 z-30 bg-slate-950/65 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-150"
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="w-full bg-white dark:bg-[#1a1633] rounded-t-3xl sm:rounded-3xl border border-slate-200 dark:border-purple-900/60 shadow-2xl p-5 space-y-4 max-h-[85vh] overflow-y-auto"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-2xl bg-white dark:bg-[#231e45] border border-slate-200 dark:border-purple-900/50 flex items-center justify-center shadow-sm">
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-sm text-slate-900 dark:text-white">
+                      Choose an account
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                      Sign in to Ethio Chat right inside the app
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowGoogleChooser(false)}
+                  className="p-1.5 rounded-full text-slate-400 hover:text-slate-700 dark:hover:text-white"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {savedAccounts.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-slate-400 px-1">
+                    Accounts on this device
+                  </p>
+                  <div className="space-y-1.5">
+                    {savedAccounts.map((acc) => {
+                      const isCurrent = acc.uid === currentUser?.uid;
+                      return (
+                        <button
+                          key={acc.uid}
+                          type="button"
+                          disabled={loading || isCurrent}
+                          onClick={async () => {
+                            setErrorMsg(null);
+                            setLoading(true);
+                            try {
+                              await switchSavedAccount(acc);
+                              setShowGoogleChooser(false);
+                              onClose?.();
+                            } catch {
+                              await handleDirectGoogleSelectAccount(acc.email);
+                            } finally {
+                              setLoading(false);
+                            }
+                          }}
+                          className="w-full p-2.5 rounded-2xl border border-slate-200 dark:border-purple-900/50 hover:bg-slate-50 dark:hover:bg-[#231e45] flex items-center gap-3 text-left transition-colors disabled:opacity-60"
+                        >
+                          <img
+                            src={acc.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${acc.username}`}
+                            alt={acc.displayName}
+                            className="w-9 h-9 rounded-full object-cover shrink-0"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                              {acc.displayName}
+                            </p>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                              {acc.email}
+                            </p>
+                          </div>
+                          {isCurrent ? (
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#7560DF]/15 text-[#7560DF]">
+                              Active
+                            </span>
+                          ) : (
+                            <ArrowRight className="w-4 h-4 text-slate-400 shrink-0" />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Embedded Google Identity Services personalized chooser button */}
+              <div
+                ref={gisButtonRef}
+                className={gisButtonMounted ? 'flex justify-center pt-1' : 'hidden'}
+              />
+
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => handleDirectGoogleSelectAccount()}
+                className="w-full py-2.5 px-4 rounded-2xl bg-[#7560DF] hover:bg-[#624ec7] disabled:opacity-60 text-white font-bold text-xs sm:text-sm flex items-center justify-center gap-2 shadow-md shadow-[#7560DF]/20 transition-all"
+              >
+                {loading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Mail className="w-4 h-4" />
+                )}
+                <span>
+                  {savedAccounts.length > 0
+                    ? 'Choose another Google email'
+                    : 'Choose Google account'}
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

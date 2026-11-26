@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { MediaLightboxModal } from '../common/MediaLightboxModal';
 import { GoldVerifiedBadge } from '../common/GoldVerifiedBadge';
+import { useBackHandler } from '../../lib/backNavigation';
 
 interface MultiPhotoGalleryModalProps {
   post: Post | null;
@@ -407,6 +408,7 @@ export const MultiPhotoGalleryModal: React.FC<MultiPhotoGalleryModalProps> = ({
   onClose,
   onViewProfile,
 }) => {
+  useBackHandler(isOpen, onClose);
   const { userProfile } = useAuth();
   const { t } = useLanguage();
   const [photos, setPhotos] = useState<PostPhoto[]>([]);

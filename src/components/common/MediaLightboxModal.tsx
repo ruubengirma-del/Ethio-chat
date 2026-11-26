@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useLanguage } from '../../context/LanguageContext';
+import { useBackHandler } from '../../lib/backNavigation';
 import {
   X,
   ZoomIn,
@@ -53,6 +54,8 @@ export const MediaLightboxModal: React.FC<MediaLightboxModalProps> = ({
   const dragStartRef = useRef<{ x: number; y: number; origX: number; origY: number } | null>(null);
   const pinchStartRef = useRef<{ dist: number; startScale: number } | null>(null);
   const lastTapRef = useRef<number>(0);
+
+  useBackHandler(isOpen, onClose);
 
   // Reset zoom & shield whenever opened or media changes
   useEffect(() => {

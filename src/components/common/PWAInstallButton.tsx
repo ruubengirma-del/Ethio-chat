@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Download, Smartphone, X, Copy, Check, ExternalLink } from 'lucide-react';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
+import { useBackHandler } from '../../lib/backNavigation';
 
 interface PWAInstallButtonProps {
   variant?: 'header' | 'settings-row';
@@ -10,6 +11,8 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({ variant = 'h
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showGuide, setShowGuide] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  useBackHandler(showGuide, () => setShowGuide(false));
 
   if (isInstalled) {
     return null;

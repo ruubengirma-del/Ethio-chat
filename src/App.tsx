@@ -51,6 +51,7 @@ import {
   showSystemNotification,
 } from './lib/pushNotifications';
 import { unlockCallAudio } from './lib/callSounds';
+import { initBackNavigation, useBackDepth, useBackHandler } from './lib/backNavigation';
 import { db } from './lib/firebase';
 import {
   collection,
@@ -88,10 +89,53 @@ const MainAppContent: React.FC = () => {
     isOwner,
     isAdmin,
   } = useAuth();
-  const [activeTab, setActiveTab] = useState<TabType>('home');
+  const [viewHistory, setViewHistory] = useState<Array<{ tab: TabType; viewingProfileUserId: string | null }>>([
+    { tab: 'home', viewingProfileUserId: null },
+  ]);
+  const currentViewStep = viewHistory[viewHistory.length - 1];
+  const activeTab = currentViewStep.tab;
+  const viewingProfileUserId = currentViewStep.viewingProfileUserId;
+
+  const setActiveTab = (nextTab: TabType) => {
+    setViewHistory((prev) => {
+      if (nextTab === 'home') {
+        return [{ tab: 'home', viewingProfileUserId: null }];
+      }
+      const top = prev[prev.length - 1];
+      if (top.tab === nextTab && top.viewingProfileUserId === null) {
+        return prev;
+      }
+      return [...prev, { tab: nextTab, viewingProfileUserId: null }].slice(-15);
+    });
+  };
+
+  const setViewingProfileUserId = (userId: string | null) => {
+    if (userId) {
+      setViewHistory((prev) => {
+        const top = prev[prev.length - 1];
+        if (top.tab === 'profile' && top.viewingProfileUserId === userId) {
+          return prev;
+        }
+        return [...prev, { tab: 'profile' as TabType, viewingProfileUserId: userId }].slice(-15);
+      });
+    } else {
+      setViewHistory((prev) => {
+        if (prev.length > 1 && prev[prev.length - 1].viewingProfileUserId !== null) {
+          return prev.slice(0, -1);
+        }
+        return prev.map((step, i) =>
+          i === prev.length - 1 ? { ...step, viewingProfileUserId: null } : step
+        );
+      });
+    }
+  };
+
+  const popViewStep = () => {
+    setViewHistory((prev) => (prev.length > 1 ? prev.slice(0, -1) : [{ tab: 'home', viewingProfileUserId: null }]));
+  };
+
   const [activeChat, setActiveChat] = useState<ActiveChatState>(null);
   const [activeGroup, setActiveGroup] = useState<{ groupId: string; initialGroup?: SocialGroup | null } | null>(null);
-  const [viewingProfileUserId, setViewingProfileUserId] = useState<string | null>(null);
   const [focusedPostId, setFocusedPostId] = useState<string | null>(null);
   const [focusedCommentId, setFocusedCommentId] = useState<string | null>(null);
   const [foregroundPushToast, setForegroundPushToast] = useState<ForegroundPushEventDetail | null>(null);
@@ -160,6 +204,43 @@ const MainAppContent: React.FC = () => {
   useEffect(() => {
     activeChatRef.current = activeChat;
   }, [activeChat]);
+
+  useEffect(() => {
+    initBackNavigation();
+  }, []);
+
+  useBackDepth(Math.max(0, viewHistory.length - 1), popViewStep);
+  useBackHandler(Boolean(focusedPostId), () => handleClearFocusedPost());
+  useBackHandler(Boolean(activeChat), () => setActiveChat(null));
+  useBackHandler(Boolean(activeGroup), () => setActiveGroup(null));
+  useBackHandler(isNotificationsOpen, () => setIsNotificationsOpen(false));
+  useBackHandler(isSearchModalOpen, () => setIsSearchModalOpen(false));
+  useBackHandler(isCreateGroupModalOpen, () => setIsCreateGroupModalOpen(false));
+  useBackHandler(isCreateTeamModalOpen, () => setIsCreateTeamModalOpen(false));
+  useBackHandler(isSwitchAccountOpen, () => setIsSwitchAccountOpen(false));
+  useBackHandler(isDashboardOpen, () => setIsDashboardOpen(false));
+  useBackHandler(isRubGPTOpen, () => setIsRubGPTOpen(false));
+  useBackHandler(isBlockedOpen, () => setIsBlockedOpen(false));
+  useBackHandler(isDevicesOpen, () => setIsDevicesOpen(false));
+  useBackHandler(isLastSeenOpen, () => setIsLastSeenOpen(false));
+  useBackHandler(isTwoStepOpen, () => setIsTwoStepOpen(false));
+  useBackHandler(isAppLockOpen, () => setIsAppLockOpen(false));
+  useBackHandler(isChatWallpaperOpen, () => setIsChatWallpaperOpen(false));
+  useBackHandler(isFontSizeOpen, () => setIsFontSizeOpen(false));
+  useBackHandler(isFontStyleOpen, () => setIsFontStyleOpen(false));
+  useBackHandler(isChatBackupOpen, () => setIsChatBackupOpen(false));
+  useBackHandler(isWarningModalOpen, () => setIsWarningModalOpen(false));
+  useBackHandler(isModerationInboxOpen, () => setIsModerationInboxOpen(false));
+  useBackHandler(isSubscriptionOpen, () => setIsSubscriptionOpen(false));
+  useBackHandler(isPaymentDashboardOpen, () => setIsPaymentDashboardOpen(false));
+  useBackHandler(
+    Boolean(currentUser && isAdmin && !isOwner && !isAddingAccount && !adminDashboardDismissed),
+    () => {
+      setAdminDashboardDismissed(true);
+      setActiveTab('settings');
+      setActiveChat(null);
+    }
+  );
 
   useEffect(() => {
     chatsInitializedRef.current = false;
@@ -733,7 +814,6 @@ const MainAppContent: React.FC = () => {
 
   const handleViewProfile = (userId: string) => {
     setViewingProfileUserId(userId);
-    setActiveTab('profile');
     setActiveChat(null);
   };
 
@@ -743,14 +823,14 @@ const MainAppContent: React.FC = () => {
     const url = new URL(window.location.href);
     url.searchParams.delete('post');
     url.searchParams.delete('comment');
-    window.history.replaceState({}, '', url.toString());
+    window.history.replaceState(window.history.state, '', url.toString());
   };
 
   const handleClearFocusedComment = () => {
     setFocusedCommentId(null);
     const url = new URL(window.location.href);
     url.searchParams.delete('comment');
-    window.history.replaceState({}, '', url.toString());
+    window.history.replaceState(window.history.state, '', url.toString());
   };
 
   const handleNavigateToPost = (postId: string, commentId?: string) => {
@@ -838,9 +918,8 @@ const MainAppContent: React.FC = () => {
           <ProfileView
             userId={viewingProfileUserId || undefined}
             onBack={() => {
-              if (viewingProfileUserId) {
-                setViewingProfileUserId(null);
-                setActiveTab('home');
+              if (viewHistory.length > 1) {
+                popViewStep();
               } else {
                 setActiveTab('settings');
               }
@@ -1060,9 +1139,6 @@ const MainAppContent: React.FC = () => {
                 markVideoSeen();
               }
               setActiveTab(tab);
-              if (tab !== 'profile') {
-                setViewingProfileUserId(null);
-              }
               setActiveChat(null);
             }}
           />

@@ -15,6 +15,7 @@ import {
   increment,
 } from 'firebase/firestore';
 import { createAppNotification, recordViewStat } from '../../lib/socialHelpers';
+import { useBackHandler } from '../../lib/backNavigation';
 import { X, Send, Eye, ChevronLeft, ChevronRight, Trash2, Edit3 } from 'lucide-react';
 
 interface StoryViewerModalProps {
@@ -56,6 +57,9 @@ export const StoryViewerModal: React.FC<StoryViewerModalProps> = ({
 
   const story = stories[index];
   const isOwner = Boolean(currentUser && story && currentUser.uid === story.authorId);
+
+  useBackHandler(showViewersDrawer, () => setShowViewersDrawer(false));
+  useBackHandler(Boolean(story && !showViewersDrawer), onClose);
 
   useEffect(() => {
     setIndex(initialIndex);

@@ -33,6 +33,7 @@ import { dispatchPushNotification } from '../../lib/pushNotifications';
 import { AudioRecorder } from './AudioRecorder';
 import { MediaLightboxModal } from '../common/MediaLightboxModal';
 import { GoldVerifiedBadge } from '../common/GoldVerifiedBadge';
+import { useBackHandler } from '../../lib/backNavigation';
 import { 
   ArrowLeft, 
   Send, 
@@ -143,6 +144,10 @@ export const ChatRoomView: React.FC<ChatRoomViewProps> = ({
   const [saveToast, setSaveToast] = useState<string | null>(null);
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(false);
   const [deletingGroup, setDeletingGroup] = useState(false);
+
+  useBackHandler(showGroupMembers, () => setShowGroupMembers(false));
+  useBackHandler(Boolean(selectedMessage), () => setSelectedMessage(null));
+  useBackHandler(Boolean(pendingMediaDraft), () => setPendingMediaDraft(null));
 
   const deletedExpiredIdsRef = useRef<Set<string>>(new Set());
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

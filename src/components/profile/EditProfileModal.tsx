@@ -8,6 +8,7 @@ import {
   readPendingEmailChangeFlow,
   clearPendingEmailChangeFlow,
 } from '../../lib/otpFlowPersistence';
+import { useBackHandler } from '../../lib/backNavigation';
 import { 
   X, 
   Camera, 
@@ -43,6 +44,7 @@ export const EditProfileModal: React.FC<EditProfileModalProps> = ({ isOpen, onCl
     reauthenticateWithGoogle,
   } = useAuth();
   const { t } = useLanguage();
+  useBackHandler(isOpen, onClose);
 
   const [displayName, setDisplayName] = useState(userProfile?.displayName || '');
   const [username, setUsername] = useState(userProfile?.username || '');

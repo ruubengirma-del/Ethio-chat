@@ -19,6 +19,7 @@ import { isAudienceVisibleToUser } from '../../lib/socialHelpers';
 import { PostCard } from './PostCard';
 import { CreatePostModal } from './CreatePostModal';
 import { CommentsModal } from './CommentsModal';
+import { useBackHandler } from '../../lib/backNavigation';
 import {
   ArrowLeft,
   Users,
@@ -59,6 +60,8 @@ export const GroupViewModal: React.FC<GroupViewModalProps> = ({
   const [activeCommentsPost, setActiveCommentsPost] = useState<Post | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busyAction, setBusyAction] = useState(false);
+
+  useBackHandler(Boolean(groupId && !isCreatePostOpen && !activeCommentsPost), onClose);
 
   useEffect(() => {
     setGroup(initialGroup || null);

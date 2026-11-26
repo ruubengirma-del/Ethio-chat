@@ -54,6 +54,7 @@ import {
 } from '../../lib/mediaPermissions';
 import { DEFAULT_RTC_CONFIG, getRtcConfiguration } from '../../lib/rtcConfig';
 import { WsMediaRelay } from '../../lib/wsMediaRelay';
+import { useBackHandler } from '../../lib/backNavigation';
 
 interface TeamLiveStageModalProps {
   team: Team;
@@ -197,6 +198,11 @@ export const TeamLiveStageModal: React.FC<TeamLiveStageModalProps> = ({
 
   // Assign picker modal when Owner clicks an empty Seat 2..10
   const [assigningSeatNum, setAssigningSeatNum] = useState<number | null>(null);
+
+  useBackHandler(assigningSeatNum !== null, () => setAssigningSeatNum(null));
+  useBackHandler(assigningSeatNum === null, () => {
+    void handleLeaveStage();
+  });
 
   // Live Stage-only Comment composer state (text + photo + emoji — never visible in Team Chat)
   const [commentText, setCommentText] = useState('');

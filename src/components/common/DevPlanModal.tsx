@@ -11,6 +11,7 @@ import {
   Copy,
   Check
 } from 'lucide-react';
+import { useBackHandler } from '../../lib/backNavigation';
 
 interface DevPlanModalProps {
   isOpen: boolean;
@@ -20,6 +21,7 @@ interface DevPlanModalProps {
 export const DevPlanModal: React.FC<DevPlanModalProps> = ({ isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState<'plan' | 'folder' | 'schema' | 'offline'>('plan');
   const [copied, setCopied] = useState(false);
+  useBackHandler(isOpen, onClose);
 
   if (!isOpen) return null;
 

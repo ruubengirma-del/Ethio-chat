@@ -36,6 +36,7 @@ import { TeamLiveStageModal } from './TeamLiveStageModal';
 import { primeMediaStream } from '../../lib/mediaPermissions';
 import { MediaLightboxModal } from '../common/MediaLightboxModal';
 import { GoldVerifiedBadge } from '../common/GoldVerifiedBadge';
+import { useBackHandler } from '../../lib/backNavigation';
 import {
   ArrowLeft,
   Users,
@@ -102,6 +103,8 @@ export const TeamRoomView: React.FC<TeamRoomViewProps> = ({
 
   const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
   const [isLiveStageOpen, setIsLiveStageOpen] = useState(false);
+
+  useBackHandler(showSettingsDrawer, () => setShowSettingsDrawer(false));
 
   // Composer & Multi-file (up to 10) attachment state
   const [inputText, setInputText] = useState('');

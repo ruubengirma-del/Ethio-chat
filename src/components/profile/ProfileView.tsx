@@ -14,6 +14,7 @@ import { WarningAppealModal } from './WarningAppealModal';
 import { usePullToRefresh } from '../../hooks/usePullToRefresh';
 import { PullToRefreshBanner } from '../common/PullToRefreshBanner';
 import { GoldVerifiedBadge } from '../common/GoldVerifiedBadge';
+import { useBackHandler } from '../../lib/backNavigation';
 import { 
   UserPlus, 
   Check, 
@@ -87,6 +88,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   const avatarInputRef = useRef<HTMLInputElement>(null);
   const restoredPendingUidRef = useRef<string | null>(null);
   const [listenerVersion, setListenerVersion] = useState(0);
+
+  useBackHandler(followModalType !== null, () => setFollowModalType(null));
+  useBackHandler(showWarningModal, () => setShowWarningModal(false));
 
   useEffect(() => {
     if (!isMe || !currentUser?.uid || !myProfile?.email) return;

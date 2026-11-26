@@ -21,7 +21,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const MODERATION_EMAIL = 'Ruubengirma@gmail.com';
 
 app.use((_req, res, next) => {
-  res.setHeader('Permissions-Policy', 'camera=*, microphone=*');
+  res.setHeader('Permissions-Policy', 'camera=*, microphone=*, identity-credentials-get=*');
   next();
 });
 

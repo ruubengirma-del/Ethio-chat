@@ -23,6 +23,7 @@ import {
   REACTION_EMOJIS_8,
 } from '../../lib/socialHelpers';
 import { dispatchPushNotification } from '../../lib/pushNotifications';
+import { useBackHandler } from '../../lib/backNavigation';
 import { AudioRecorder } from '../chat/AudioRecorder';
 import { GoldVerifiedBadge } from '../common/GoldVerifiedBadge';
 import { 
@@ -73,6 +74,8 @@ export const CommentsModal: React.FC<CommentsModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useBackHandler(Boolean(post), onClose);
 
   useEffect(() => {
     if (!post) return;

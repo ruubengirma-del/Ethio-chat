@@ -22,6 +22,7 @@ import {
   extractMentionUsernames,
 } from '../../lib/socialHelpers';
 import { AudienceSelector } from '../common/AudienceSelector';
+import { useBackHandler } from '../../lib/backNavigation';
 import {
   X,
   Image as ImageIcon,
@@ -54,6 +55,7 @@ const MAX_PHOTOS_PER_POST = 200;
 export const EditPostModal: React.FC<EditPostModalProps> = ({ post, isOpen, onClose }) => {
   const { userProfile, allUsers } = useAuth();
   const { t } = useLanguage();
+  useBackHandler(isOpen, onClose);
 
   const [content, setContent] = useState('');
   const [mediaType, setMediaType] = useState<MediaType>('none');

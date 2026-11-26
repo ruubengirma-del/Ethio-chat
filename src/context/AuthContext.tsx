@@ -9,6 +9,7 @@ import {
   verifyBeforeUpdateEmail,
   updatePassword,
   signInWithPopup,
+  signInWithCredential,
   signInWithCustomToken,
   GoogleAuthProvider,
   sendPasswordResetEmail,
@@ -125,7 +126,8 @@ interface AuthContextType {
     email: string
   ) => Promise<{ ok: boolean; emailSent?: boolean }>;
   verifySignUpCode: (email: string, code: string) => Promise<string>;
-  signInWithGoogle: () => Promise<void>;
+  signInWithGoogle: (loginHint?: string) => Promise<void>;
+  signInWithGoogleCredential: (idToken: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   requestPasswordResetCode: (email: string) => Promise<{ ok: boolean; emailSent?: boolean }>;
   verifyPasswordResetCode: (email: string, code: string) => Promise<string>;
@@ -1330,8 +1332,87 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Google Sign In (strictly 1 email = 1 account + unique username + max 5 newly created accounts per device except Owner/Admin)
-  const signInWithGoogle = async () => {
+  const completeGoogleFirebaseSignIn = async (
+    fbUser: FirebaseUser,
+    callerIsPrivilegedBeforePopup: boolean
+  ) => {
+    clearStoredPasswordVersion(fbUser.uid);
+    const normalizedEmail = (fbUser.email || '').trim().toLowerCase();
+    const userDocRef = doc(db, 'users', fbUser.uid);
+    const snap = await getDocFromServer(userDocRef).catch(() => getDoc(userDocRef));
+
+    if (!snap.exists()) {
+      const targetIsPrivileged = getAccountRole(normalizedEmail, adminEmails) !== 'user';
+      const bypassForOwnerOrAdmin = callerIsPrivilegedBeforePopup || targetIsPrivileged;
+
+      let deviceCheck: { deviceId: string; existingUids: string[] };
+      try {
+        deviceCheck = await assertDeviceCanCreateAccount({ bypassForOwnerOrAdmin });
+      } catch (limitErr) {
+        await deleteUser(fbUser).catch(() => firebaseSignOut(auth).catch(() => {}));
+        throw limitErr;
+      }
+
+      if (normalizedEmail) {
+        try {
+          await ensureEmailAvailableForUid(normalizedEmail, fbUser.uid);
+        } catch (dupErr) {
+          await firebaseSignOut(auth).catch(() => {});
+          throw dupErr;
+        }
+      }
+      const rawBase = (normalizedEmail.split('@')[0] || `user_${fbUser.uid.slice(0, 6)}`)
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '');
+      const username = await findUniqueUsernameForAutoCreate(rawBase, fbUser.uid);
+      const profile: UserProfile = {
+        userId: fbUser.uid,
+        username,
+        displayName: fbUser.displayName || username,
+        email: normalizedEmail,
+        photoURL: fbUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${username}`,
+        bio: 'Connecting on Ethio Chat 🚀',
+        followersCount: 0,
+        followingCount: 0,
+        hideOnlineStatus: false,
+        profileViewsCount: 0,
+        createdAt: new Date().toISOString()
+      };
+      if (normalizedEmail) {
+        await claimEmailLock(normalizedEmail, fbUser.uid);
+      }
+      await claimUsernameLock(username, fbUser.uid).catch(() => {});
+      await setDoc(userDocRef, profile);
+      await recordDeviceCreatedAccount({
+        deviceId: deviceCheck.deviceId,
+        userId: fbUser.uid,
+        bypassForOwnerOrAdmin,
+        existingUids: deviceCheck.existingUids,
+      });
+      setUserProfile(profile);
+    } else {
+      if (normalizedEmail) {
+        await claimEmailLock(normalizedEmail, fbUser.uid).catch(() => {});
+      }
+      const existingProf = snap.data() as UserProfile;
+      if (existingProf.passwordVersion) {
+        storePasswordVersion(fbUser.uid, existingProf.passwordVersion);
+      }
+      if (existingProf?.username && /^[a-z0-9_]{3,30}$/.test(existingProf.username.trim().toLowerCase())) {
+        await claimUsernameLock(existingProf.username, fbUser.uid).catch(() => {});
+      }
+    }
+
+    localStorage.removeItem(LOCAL_SESSION_KEY);
+    await backupCurrentFirebaseSession(fbUser);
+    setFirebaseAuthUser(fbUser);
+    setCurrentUser(fbUser);
+    setIsAddingAccount(false);
+    setPendingReauth(null);
+  };
+
+  // In-app Google Identity Services / FedCM ID-token Sign In (keeps user directly inside the app)
+  const signInWithGoogleCredential = async (idToken: string) => {
     creatingAccountInFlightRef.current = true;
     try {
       const callerIsPrivilegedBeforePopup = Boolean(
@@ -1343,81 +1424,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (auth.currentUser) {
         await backupCurrentFirebaseSession(auth.currentUser);
       }
-      const provider = new GoogleAuthProvider();
-      const res = await signInWithPopup(auth, provider);
-      clearStoredPasswordVersion(res.user.uid);
-      const normalizedEmail = (res.user.email || '').trim().toLowerCase();
-      const userDocRef = doc(db, 'users', res.user.uid);
-      const snap = await getDocFromServer(userDocRef).catch(() => getDoc(userDocRef));
+      const credential = GoogleAuthProvider.credential(idToken);
+      const res = await signInWithCredential(auth, credential);
+      await completeGoogleFirebaseSignIn(res.user, callerIsPrivilegedBeforePopup);
+    } catch (error) {
+      console.warn('In-app Google credential sign-in notice:', error);
+      throw error;
+    } finally {
+      creatingAccountInFlightRef.current = false;
+    }
+  };
 
-      if (!snap.exists()) {
-        const targetIsPrivileged = getAccountRole(normalizedEmail, adminEmails) !== 'user';
-        const bypassForOwnerOrAdmin = callerIsPrivilegedBeforePopup || targetIsPrivileged;
-
-        let deviceCheck: { deviceId: string; existingUids: string[] };
-        try {
-          deviceCheck = await assertDeviceCanCreateAccount({ bypassForOwnerOrAdmin });
-        } catch (limitErr) {
-          await deleteUser(res.user).catch(() => firebaseSignOut(auth).catch(() => {}));
-          throw limitErr;
-        }
-
-        if (normalizedEmail) {
-          try {
-            await ensureEmailAvailableForUid(normalizedEmail, res.user.uid);
-          } catch (dupErr) {
-            await firebaseSignOut(auth).catch(() => {});
-            throw dupErr;
-          }
-        }
-        const rawBase = (normalizedEmail.split('@')[0] || `user_${res.user.uid.slice(0, 6)}`)
-          .toLowerCase()
-          .replace(/[^a-z0-9_]/g, '');
-        const username = await findUniqueUsernameForAutoCreate(rawBase, res.user.uid);
-        const profile: UserProfile = {
-          userId: res.user.uid,
-          username,
-          displayName: res.user.displayName || username,
-          email: normalizedEmail,
-          photoURL: res.user.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${username}`,
-          bio: 'Connecting on Ethio Chat 🚀',
-          followersCount: 0,
-          followingCount: 0,
-          hideOnlineStatus: false,
-          profileViewsCount: 0,
-          createdAt: new Date().toISOString()
-        };
-        if (normalizedEmail) {
-          await claimEmailLock(normalizedEmail, res.user.uid);
-        }
-        await claimUsernameLock(username, res.user.uid).catch(() => {});
-        await setDoc(userDocRef, profile);
-        await recordDeviceCreatedAccount({
-          deviceId: deviceCheck.deviceId,
-          userId: res.user.uid,
-          bypassForOwnerOrAdmin,
-          existingUids: deviceCheck.existingUids,
-        });
-        setUserProfile(profile);
-      } else {
-        if (normalizedEmail) {
-          await claimEmailLock(normalizedEmail, res.user.uid).catch(() => {});
-        }
-        const existingProf = snap.data() as UserProfile;
-        if (existingProf.passwordVersion) {
-          storePasswordVersion(res.user.uid, existingProf.passwordVersion);
-        }
-        if (existingProf?.username && /^[a-z0-9_]{3,30}$/.test(existingProf.username.trim().toLowerCase())) {
-          await claimUsernameLock(existingProf.username, res.user.uid).catch(() => {});
-        }
+  // Google Sign In (strictly 1 email = 1 account + unique username + max 5 newly created accounts per device except Owner/Admin)
+  const signInWithGoogle = async (loginHint?: string) => {
+    creatingAccountInFlightRef.current = true;
+    try {
+      const callerIsPrivilegedBeforePopup = Boolean(
+        hasVerifiedFirebaseSession &&
+          serverVerifiedRole &&
+          serverVerifiedRole.uid === currentUser?.uid &&
+          (serverVerifiedRole.role === 'owner' || serverVerifiedRole.role === 'admin')
+      );
+      if (auth.currentUser) {
+        void backupCurrentFirebaseSession(auth.currentUser);
       }
-
-      localStorage.removeItem(LOCAL_SESSION_KEY);
-      await backupCurrentFirebaseSession(res.user);
-      setFirebaseAuthUser(res.user);
-      setCurrentUser(res.user);
-      setIsAddingAccount(false);
-      setPendingReauth(null);
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({
+        prompt: 'select_account',
+        ...(loginHint ? { login_hint: loginHint } : {}),
+      });
+      const res = await signInWithPopup(auth, provider);
+      await completeGoogleFirebaseSignIn(res.user, callerIsPrivilegedBeforePopup);
     } catch (error) {
       console.warn('Google sign-in notice:', error);
       throw error;
@@ -2299,6 +2336,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         requestSignUpCode,
         verifySignUpCode,
         signInWithGoogle,
+        signInWithGoogleCredential,
         resetPassword,
         requestPasswordResetCode,
         verifyPasswordResetCode,

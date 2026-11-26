@@ -19,6 +19,7 @@ import {
   REPORT_REASONS,
   createAppNotification,
 } from '../../lib/socialHelpers';
+import { useBackHandler } from '../../lib/backNavigation';
 import {
   X,
   Flag,
@@ -40,6 +41,7 @@ interface ReportModalProps {
 export const ReportModal: React.FC<ReportModalProps> = ({ post, isOpen, onClose }) => {
   const { currentUser, userProfile } = useAuth();
   const { t } = useLanguage();
+  useBackHandler(Boolean(isOpen && post && currentUser && userProfile), onClose);
 
   const [selectedReason, setSelectedReason] = useState<string>(REPORT_REASONS[0]);
   const [details, setDetails] = useState('');

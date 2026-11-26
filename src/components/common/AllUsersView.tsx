@@ -8,6 +8,7 @@ import { ChatParticipant, SocialGroup, UserProfile } from '../../types';
 import { usePullToRefresh } from '../../hooks/usePullToRefresh';
 import { PullToRefreshBanner } from './PullToRefreshBanner';
 import { GoldVerifiedBadge } from './GoldVerifiedBadge';
+import { useBackHandler } from '../../lib/backNavigation';
 import {
   Users,
   Search,
@@ -52,6 +53,8 @@ export const AllUsersView: React.FC<AllUsersViewProps> = ({
   const [allGroups, setAllGroups] = useState<SocialGroup[]>([]);
   const [joiningGroupId, setJoiningGroupId] = useState<string | null>(null);
   const [listenerVersion, setListenerVersion] = useState(0);
+
+  useBackHandler(showOnlineModal, () => setShowOnlineModal(false));
 
   const handleRefreshUsers = useCallback(async () => {
     const groupsRef = collection(db, 'groups');
