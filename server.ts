@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import dotenv from 'dotenv';
 import express from 'express';
 import http from 'http';
 import path from 'path';
@@ -10,8 +11,16 @@ import { getApps, initializeApp, getApp, cert } from 'firebase-admin/app';
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 import { getMessaging as getAdminMessaging } from 'firebase-admin/messaging';
-import { GoogleGenAI, ThinkingLevel, type Part } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, type Content, type Part } from '@google/genai';
 import { WebSocketServer, WebSocket } from 'ws';
+
+try {
+  if (fs.existsSync('/etc/secrets/.env')) {
+    dotenv.config({ path: '/etc/secrets/.env' });
+  }
+} catch {
+  // ignore missing Render secret .env
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -126,9 +135,20 @@ function hashOtpCode(email: string, code: string, salt: string): string {
   return crypto.createHash('sha256').update(`${email.toLowerCase()}:${code}:${salt}`).digest('hex');
 }
 
+function stripSurroundingQuotes(val: string): string {
+  const trimmed = val.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2)
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 function readConfigValue(key: string): string {
   const direct = process.env[key];
-  if (direct && direct.trim()) return direct.trim();
+  if (direct && direct.trim()) return stripSurroundingQuotes(direct);
 
   const candidateFiles = [
     `/etc/secrets/${key}`,
@@ -137,7 +157,7 @@ function readConfigValue(key: string): string {
   for (const filePath of candidateFiles) {
     try {
       if (fs.existsSync(filePath)) {
-        const content = fs.readFileSync(filePath, 'utf-8').trim();
+        const content = stripSurroundingQuotes(fs.readFileSync(filePath, 'utf-8'));
         if (content) return content;
       }
     } catch {
@@ -371,7 +391,8 @@ async function findUserByEmail(normalizedEmail: string): Promise<{ uid: string; 
 }
 
 function getAiClient() {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const rawKey = readConfigValue('GEMINI_API_KEY') || readConfigValue('GOOGLE_API_KEY');
+  const apiKey = rawKey && rawKey !== 'MY_GEMINI_API_KEY' ? rawKey : '';
   if (!apiKey) {
     return null;
   }
@@ -416,6 +437,20 @@ function extractStatusAndMessage(err: unknown): { code?: number; status?: string
   }
 }
 
+function isAuthConfigError(err: unknown): boolean {
+  const info = extractStatusAndMessage(err);
+  const msg = info.message.toLowerCase();
+  return (
+    info.code === 401 ||
+    info.code === 403 ||
+    info.status === 'PERMISSION_DENIED' ||
+    info.status === 'UNAUTHENTICATED' ||
+    msg.includes('api_key_invalid') ||
+    msg.includes('api key not valid') ||
+    msg.includes('permission_denied')
+  );
+}
+
 function isRetryableOverload(err: unknown): boolean {
   const info = extractStatusAndMessage(err);
   const msg = info.message.toLowerCase();
@@ -426,6 +461,7 @@ function isRetryableOverload(err: unknown): boolean {
     info.status === 'UNAVAILABLE' ||
     info.status === 'RESOURCE_EXHAUSTED' ||
     msg.includes('503') ||
+    msg.includes('429') ||
     msg.includes('high demand') ||
     msg.includes('unavailable') ||
     msg.includes('overloaded') ||
@@ -1633,12 +1669,17 @@ app.post('/api/rubgpt', async (req, res) => {
 
   const systemInstruction = `You are RubGPT, a smart, friendly, and accurate multimodal AI assistant built inside the Ethio Chat app. You can analyze photos/images users upload (read text in images, identify objects, explain problems, translate text from images, answer homework/questions about photos) and answer any text questions in English, Afaan Oromo, or Amharic. Keep answers clear, structured, and warm. ${langHint}`;
 
-  const validHistory = (Array.isArray(history) ? history : [])
+  const rawHistory = (Array.isArray(history) ? history : [])
     .slice(-14)
-    .filter((h) => h && (h.role === 'user' || h.role === 'model') && (typeof h.text === 'string' || typeof h.imageUrl === 'string'));
+    .filter((h) => {
+      if (!h || (h.role !== 'user' && h.role !== 'model')) return false;
+      const textStr = typeof h.text === 'string' ? h.text.trim() : '';
+      if (textStr.startsWith('⚠️')) return false;
+      return Boolean(textStr) || Boolean(parseDataUrl(h.imageUrl));
+    });
 
   let imagesRemainingInHistory = 2;
-  const chatHistory = [...validHistory]
+  const mappedHistory: Content[] = [...rawHistory]
     .reverse()
     .map((h) => {
       const parts: Part[] = [];
@@ -1649,18 +1690,33 @@ app.post('/api/rubgpt', async (req, res) => {
           imagesRemainingInHistory -= 1;
         }
       }
-      if (h.text && h.text.trim()) {
-        parts.push({ text: h.text });
-      }
-      if (parts.length === 0) {
-        parts.push({ text: ' ' });
+      if (typeof h.text === 'string' && h.text.trim()) {
+        parts.push({ text: h.text.trim() });
       }
       return {
         role: h.role,
         parts,
       };
     })
-    .reverse();
+    .reverse()
+    .filter((turn) => (turn.parts?.length ?? 0) > 0);
+
+  // Normalize conversation so turns strictly start with 'user', alternate user/model, and end with 'model'
+  const normalizedHistory: Content[] = [];
+  for (const turn of mappedHistory) {
+    if (normalizedHistory.length === 0 && turn.role !== 'user') {
+      continue;
+    }
+    const prev = normalizedHistory[normalizedHistory.length - 1];
+    if (prev && prev.role === turn.role) {
+      prev.parts = [...(prev.parts || []), ...(turn.parts || [])];
+    } else {
+      normalizedHistory.push({ role: turn.role, parts: [...(turn.parts || [])] });
+    }
+  }
+  while (normalizedHistory.length > 0 && normalizedHistory[normalizedHistory.length - 1].role === 'user') {
+    normalizedHistory.pop();
+  }
 
   const effectiveText =
     trimmedMessage ||
@@ -1676,10 +1732,16 @@ app.post('/api/rubgpt', async (req, res) => {
   }
   currentParts.push({ text: effectiveText });
 
+  const contentsPayload: Content[] = [
+    ...normalizedHistory,
+    { role: 'user', parts: currentParts },
+  ];
+
   const attempts: Array<{ model: string; useLowThinking: boolean; delayMs: number }> = [
     { model: 'gemini-4-hydrogen', useLowThinking: true, delayMs: 0 },
+    { model: 'gemini-4-hydrogen', useLowThinking: false, delayMs: 0 },
     { model: 'gemini-3.1-flash-lite', useLowThinking: false, delayMs: 0 },
-    { model: 'gemini-3.1-flash-lite', useLowThinking: false, delayMs: 800 },
+    { model: 'gemini-3.1-flash-lite', useLowThinking: false, delayMs: 900 },
   ];
 
   let lastErr: unknown = null;
@@ -1690,12 +1752,12 @@ app.post('/api/rubgpt', async (req, res) => {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 14000);
+    const timer = setTimeout(() => controller.abort(), 25000);
 
     try {
-      const chat = ai.chats.create({
+      const response = await ai.models.generateContent({
         model: attempt.model,
-        history: chatHistory,
+        contents: contentsPayload,
         config: {
           systemInstruction,
           abortSignal: controller.signal,
@@ -1705,20 +1767,33 @@ app.post('/api/rubgpt', async (req, res) => {
         },
       });
 
-      const response = await chat.sendMessage({
-        message: currentParts,
-      });
-
       clearTimeout(timer);
-      res.json({
-        reply: response.text || 'I could not generate a response. Please try again.',
-      });
+
+      let replyText = (response.text || '').trim();
+      if (!replyText) {
+        const candidateParts = response.candidates?.[0]?.content?.parts;
+        if (Array.isArray(candidateParts)) {
+          replyText = candidateParts
+            .filter((p) => typeof p.text === 'string' && !(p as { thought?: boolean }).thought)
+            .map((p) => p.text)
+            .join('\n')
+            .trim();
+        }
+      }
+
+      if (!replyText) {
+        const finishReason = response.candidates?.[0]?.finishReason;
+        throw new Error(`Empty response from ${attempt.model} (finishReason: ${finishReason || 'unknown'})`);
+      }
+
+      res.json({ reply: replyText });
       return;
     } catch (err: unknown) {
       clearTimeout(timer);
       lastErr = err;
-      console.warn(`RubGPT (${attempt.model}) error:`, extractStatusAndMessage(err).message);
-      if (!isRetryableOverload(err)) {
+      const errInfo = extractStatusAndMessage(err);
+      console.warn(`RubGPT (${attempt.model}, thinking=${attempt.useLowThinking}) error:`, errInfo.message);
+      if (isAuthConfigError(err)) {
         break;
       }
     }
@@ -1726,6 +1801,19 @@ app.post('/api/rubgpt', async (req, res) => {
 
   console.error('RubGPT API Error after fallback:', lastErr);
   const info = extractStatusAndMessage(lastErr);
+
+  if (isAuthConfigError(lastErr)) {
+    res.status(401).json({
+      error:
+        language === 'om'
+          ? 'Furtuun Gemini API sirrii miti ykn hayyama hin qabu. Settings > Secrets keessatti mirkaneessaa.'
+          : language === 'am'
+          ? 'የGemini API ቁልፍ ልክ አይደለም ወይም ፈቃድ የለውም። Settings > Secrets ውስጥ ያረጋግጡ።'
+          : 'Gemini API key is invalid or unauthorized. Please check Settings > Secrets.',
+    });
+    return;
+  }
+
   if (isRetryableOverload(lastErr)) {
     res.status(503).json({
       error:

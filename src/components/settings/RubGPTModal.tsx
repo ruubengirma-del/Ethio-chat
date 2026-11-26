@@ -227,18 +227,37 @@ export const RubGPTModal: React.FC<RubGPTModalProps> = ({ isOpen, onClose }) => 
     imageToSend: string | null | undefined,
     priorMessages: RubGPTMessage[]
   ): Promise<RubGPTMessage> => {
-    const historyToSend = priorMessages
-      .filter((m) => m.id !== 'welcome')
-      .map((m) => ({
-        role: m.role,
-        text: m.text,
-        ...(m.imageUrl ? { imageUrl: m.imageUrl } : {}),
-      }));
+    const cleanPrior = priorMessages
+      .filter(
+        (m) =>
+          m.id !== 'welcome' &&
+          !m.id.startsWith('err_') &&
+          !m.text.trim().startsWith('⚠️')
+      )
+      .slice(-14);
+
+    let keptImageCount = 0;
+    const historyToSend = [...cleanPrior]
+      .reverse()
+      .map((m) => {
+        const keepImg = Boolean(m.imageUrl) && keptImageCount < 1;
+        if (keepImg) keptImageCount += 1;
+        return {
+          role: m.role,
+          text: m.text,
+          ...(keepImg && m.imageUrl ? { imageUrl: m.imageUrl } : {}),
+        };
+      })
+      .reverse();
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 55000);
 
     try {
       const res = await fetch('/api/rubgpt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           message: displayPrompt,
           ...(imageToSend ? { imageUrl: imageToSend } : {}),
@@ -246,22 +265,48 @@ export const RubGPTModal: React.FC<RubGPTModalProps> = ({ isOpen, onClose }) => 
           language,
         }),
       });
-      const data = await res.json();
+      clearTimeout(timeoutId);
+
+      const rawText = await res.text();
+      let data: { reply?: string; error?: string } | null = null;
+      try {
+        data = rawText ? (JSON.parse(rawText) as { reply?: string; error?: string }) : null;
+      } catch {
+        data = null;
+      }
+
       if (!res.ok) {
-        throw new Error(data?.error || 'Could not get response from RubGPT');
+        throw new Error(
+          data?.error ||
+            (res.status >= 500
+              ? 'RubGPT server error. Please try again shortly.'
+              : `Could not get response from RubGPT (${res.status})`)
+        );
+      }
+
+      if (!data?.reply) {
+        throw new Error('RubGPT returned an empty response. Please try again.');
       }
 
       return {
         id: `m_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         role: 'model',
-        text: data.reply || 'No response generated.',
+        text: data.reply,
         timestamp: new Date().toISOString(),
       };
     } catch (err: any) {
+      clearTimeout(timeoutId);
+      const isAbort = err?.name === 'AbortError';
+      const fallbackMsg =
+        language === 'om'
+          ? 'Yeroon deebii dheerateera. Mee irra deebi’aa yaalaa.'
+          : language === 'am'
+          ? 'ምላሽ ለመቀበል ጊዜው ዘግይቷል። እባክዎ እንደገና ይሞክሩ።'
+          : 'Request timed out. Please try again.';
       return {
         id: `err_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         role: 'model',
-        text: `⚠️ ${err?.message || 'Unable to connect to RubGPT right now.'}`,
+        text: `⚠️ ${isAbort ? fallbackMsg : err?.message || 'Unable to connect to RubGPT right now.'}`,
         timestamp: new Date().toISOString(),
       };
     }
@@ -306,7 +351,9 @@ export const RubGPTModal: React.FC<RubGPTModalProps> = ({ isOpen, onClose }) => 
       persistLocal(updated);
       return updated;
     });
-    saveMessageToFirestore(aiMsg);
+    if (!aiMsg.id.startsWith('err_')) {
+      saveMessageToFirestore(aiMsg);
+    }
     setSending(false);
   };
 
@@ -345,7 +392,9 @@ export const RubGPTModal: React.FC<RubGPTModalProps> = ({ isOpen, onClose }) => 
       persistLocal(updated);
       return updated;
     });
-    saveMessageToFirestore(aiMsg);
+    if (!aiMsg.id.startsWith('err_')) {
+      saveMessageToFirestore(aiMsg);
+    }
     setSending(false);
   };
 
