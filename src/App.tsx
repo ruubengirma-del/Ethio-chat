@@ -26,7 +26,6 @@ import { RubGPTModal } from './components/settings/RubGPTModal';
 import { BlockedUsersModal } from './components/settings/BlockedUsersModal';
 import { DevicesModal } from './components/settings/DevicesModal';
 import {
-  LastSeenModal,
   TwoStepModal,
   AppLockConfigModal,
   PasscodeOverlay
@@ -161,7 +160,6 @@ const MainAppContent: React.FC = () => {
   const [isBlockedOpen, setIsBlockedOpen] = useState(false);
   const [isDevicesOpen, setIsDevicesOpen] = useState(false);
 
-  const [isLastSeenOpen, setIsLastSeenOpen] = useState(false);
   const [isTwoStepOpen, setIsTwoStepOpen] = useState(false);
   const [isAppLockOpen, setIsAppLockOpen] = useState(false);
   const [isChatWallpaperOpen, setIsChatWallpaperOpen] = useState(false);
@@ -222,7 +220,6 @@ const MainAppContent: React.FC = () => {
   useBackHandler(isRubGPTOpen, () => setIsRubGPTOpen(false));
   useBackHandler(isBlockedOpen, () => setIsBlockedOpen(false));
   useBackHandler(isDevicesOpen, () => setIsDevicesOpen(false));
-  useBackHandler(isLastSeenOpen, () => setIsLastSeenOpen(false));
   useBackHandler(isTwoStepOpen, () => setIsTwoStepOpen(false));
   useBackHandler(isAppLockOpen, () => setIsAppLockOpen(false));
   useBackHandler(isChatWallpaperOpen, () => setIsChatWallpaperOpen(false));
@@ -942,7 +939,6 @@ const MainAppContent: React.FC = () => {
             onOpenRubGPT={() => setIsRubGPTOpen(true)}
             onOpenBlocked={() => setIsBlockedOpen(true)}
             onOpenDevices={() => setIsDevicesOpen(true)}
-            onOpenLastSeen={() => setIsLastSeenOpen(true)}
             onOpenTwoStep={() => setIsTwoStepOpen(true)}
             onOpenAppLock={() => setIsAppLockOpen(true)}
             onOpenChatWallpaper={() => setIsChatWallpaperOpen(true)}
@@ -1227,11 +1223,6 @@ const MainAppContent: React.FC = () => {
       <DevicesModal
         isOpen={isDevicesOpen}
         onClose={() => setIsDevicesOpen(false)}
-      />
-
-      <LastSeenModal
-        isOpen={isLastSeenOpen}
-        onClose={() => setIsLastSeenOpen(false)}
       />
 
       <TwoStepModal

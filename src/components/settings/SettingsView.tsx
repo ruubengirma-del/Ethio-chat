@@ -23,7 +23,6 @@ import {
   RefreshCw,
   ChevronRight,
   Check,
-  Clock,
   CheckCheck,
   ShieldCheck,
   Lock,
@@ -50,7 +49,6 @@ interface SettingsViewProps {
   onOpenRubGPT: () => void;
   onOpenBlocked: () => void;
   onOpenDevices: () => void;
-  onOpenLastSeen: () => void;
   onOpenTwoStep: () => void;
   onOpenAppLock: () => void;
   onOpenChatWallpaper: () => void;
@@ -70,7 +68,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onOpenRubGPT,
   onOpenBlocked,
   onOpenDevices,
-  onOpenLastSeen,
   onOpenTwoStep,
   onOpenAppLock,
   onOpenChatWallpaper,
@@ -102,12 +99,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const readReceiptsOn = userProfile?.readReceiptsEnabled !== false;
   const reactionsOn = userProfile?.messageReactionsEnabled !== false;
   const autoDownloadOn = userProfile?.autoDownloadMedia !== false;
-  const lastSeenLabel =
-    userProfile?.lastSeenVisibility === 'nobody'
-      ? 'Nobody'
-      : userProfile?.lastSeenVisibility === 'followers'
-      ? 'Followers'
-      : 'Everyone';
   const fontSizeLabel =
     userProfile?.chatFontSize === 'small'
       ? 'Small'
@@ -358,32 +349,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
                 <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
                   {t('devicesDesc')}
-                </p>
-              </div>
-            </div>
-            <ChevronRight className="w-4 h-4 text-slate-400 shrink-0" />
-          </div>
-
-          {/* Last Seen */}
-          <div
-            onClick={onOpenLastSeen}
-            className="px-5 py-4 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-50 dark:hover:bg-purple-950/20 transition-colors group"
-          >
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-2xl bg-violet-500/15 text-[#7560DF] flex items-center justify-center shrink-0">
-                <Clock className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <h4 className="font-bold text-sm text-slate-900 dark:text-white group-hover:text-[#7560DF] transition-colors truncate">
-                    {t('lastSeen')}
-                  </h4>
-                  <span className="px-2 py-0.5 rounded-full bg-[#7560DF]/15 text-[#7560DF] dark:text-[#B09EFC] text-[10px] font-extrabold">
-                    {lastSeenLabel}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                  {t('lastSeenDesc')}
                 </p>
               </div>
             </div>
